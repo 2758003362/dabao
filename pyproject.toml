@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dabao"  # 你的包名
+version = "0.1.0"  # 版本号
+authors = [
+    { name = "Lin", email = "2758003362@qq.com" }  # 作者信息
+]
+description = "A sample Python package"  # 包描述
+requires-python = ">=3.8"  # 支持的Python版本
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+# 可选：定义依赖
+dependencies = [
+    # "requests>=2.25.1",  # 示例依赖，根据需要添加
+]
