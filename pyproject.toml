@@ -16,13 +16,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-# 可选：项目依赖（仅添加纯Python库）
+# 可选依赖（仅纯Python库）
 dependencies = [
-    # 示例：如需添加依赖，取消注释并修改
     # "requests>=2.25.1",
 ]
-
-# 可选：项目URL（如GitHub仓库、文档等）
-# [project.urls]
-# Homepage = "https://github.com/你的用户名/你的仓库名"
-# Documentation = "https://你的文档地址"
