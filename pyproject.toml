@@ -1,103 +1,28 @@
-name: 纯 Python 包多平台构建与发布
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
-# 触发条件：推送标签、PR 或手动触发
-on:
-  push:
-    tags: ["v*.*.*"]  # 推送版本标签时触发（如 v1.0.0）
-  pull_request:
-    branches: [test-workflow]  # PR 到目标分支时触发
-  workflow_dispatch:  # 允许手动在 GitHub 页面触发
+[project]
+name = "dabao"
+version = "0.1.0"
+authors = [
+    { name = "Lin", email = "2758003362@qq.com" }
+]
+description = "A sample Python package"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
 
-jobs:
-  # 任务 1：多平台验证并构建纯 Python 轮包
-  build_pure_wheel:
-    name: 在 ${{ matrix.os }} 上验证 Python ${{ matrix.python-version }}
-    runs-on: ${{ matrix.os }}  # 运行的操作系统
-    strategy:
-      fail-fast: false  # 一个平台失败不影响其他平台
-      matrix:
-        # 测试多操作系统（验证兼容性，实际轮包跨平台）
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        # 测试多 Python 版本（确保包兼容）
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
+# 可选：项目依赖（仅添加纯Python库）
+dependencies = [
+    # 示例：如需添加依赖，取消注释并修改
+    # "requests>=2.25.1",
+]
 
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4  # 拉取仓库代码
-
-      - name: 设置 Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}  # 配置矩阵中的 Python 版本
-
-      - name: 安装构建工具（setuptools + wheel）
-        run: |
-          python -m pip install --upgrade pip
-          pip install setuptools wheel build  # 纯 Python 构建依赖
-
-      - name: 构建纯 Python 轮包
-        run: python -m build --wheel  # 生成轮包（输出到 dist 目录）
-
-      - name: 验证轮包可安装性
-        run: |
-          # 安装生成的轮包
-          pip install dist/*.whl
-          # 验证包可正常导入
-          python -c "import dabao; print('包导入成功：', dabao.__name__)"
-
-      - name: 验证轮包为纯 Python 格式
-        run: |
-          # 检查轮包文件名是否包含 "py3-none-any"（纯 Python 标识）
-          $wheel_file = Get-ChildItem dist/*.whl | Select-Object -First 1
-          if ($wheel_file.Name -notmatch "py3-none-any") {
-              Write-Error "生成的不是纯 Python 轮包：$($wheel_file.Name)"
-              exit 1
-          }
-        if: matrix.os == 'windows-latest'  # Windows 验证命令
-
-      - name: 验证轮包为纯 Python 格式
-        run: |
-          wheel_file=$(find dist -name "*.whl" | head -n 1)
-          if ! echo "$wheel_file" | grep -q "py3-none-any"; then
-              echo "错误：生成的不是纯 Python 轮包：$wheel_file"
-              exit 1
-          fi
-        if: matrix.os != 'windows-latest'  # Linux/macOS 验证命令
-
-      - name: 上传轮包（仅保留一份跨平台产物）
-        if: matrix.python-version == '3.11'  # 仅用 Python 3.11 的产物（所有版本产物相同）
-        uses: actions/upload-artifact@v4
-        with:
-          name: pure-python-wheel  # 所有平台共用一个产物名（纯 Python 轮包唯一）
-          path: dist/*.whl
-          overwrite: true  # 覆盖不同平台的同名产物（实际内容相同）
-
-  # 任务 2：发布到 PyPI（仅在推送版本标签时执行）
-  publish_to_pypi:
-    name: 发布到 PyPI
-    needs: build_pure_wheel  # 依赖构建任务完成
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')  # 仅标签推送触发
-
-    steps:
-      - name: 下载构建产物（纯 Python 轮包）
-        uses: actions/download-artifact@v4
-        with:
-          name: pure-python-wheel
-          path: dist  # 轮包保存到 dist 目录
-
-      - name: 显示待发布文件
-        run: ls -l dist/  # 确认轮包存在
-
-      - name: 发布到 PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          user: __token__
-          password: ${{ secrets.PYPI_API_TOKEN }}  # 需在 GitHub 仓库设置中添加此密钥
-          # 测试环境可选：repository_url: https://test.pypi.org/legacy/
-
-      - name: 创建 GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.whl  # 附加轮包到 Release 中
-          generate_release_notes: true  # 自动生成发布说明
+# 可选：项目URL（如GitHub仓库、文档等）
+# [project.urls]
+# Homepage = "https://github.com/你的用户名/你的仓库名"
+# Documentation = "https://你的文档地址"
