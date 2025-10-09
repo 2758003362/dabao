@@ -1,0 +1,109 @@
+name: 多平台 Python Wheel 包构建与发布
+
+# 触发条件：推送标签或手动触发
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # 匹配语义化版本标签，如 v1.0.0
+  pull_request:
+    branches: [ main, master ]  # 拉取请求时运行测试
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  # 任务 1: 构建多平台 Wheel 包
+  build_wheels:
+    name: 在 ${{ matrix.os }} 上构建 Wheel
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 即使一个平台失败，其他平台继续运行
+      fail-fast: false
+      matrix:
+        # 要构建的操作系统
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # 可选：添加特定架构（如 macOS arm64）
+        include:
+          - os: macos-latest
+            arch: arm64
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'  # 如果有子模块，需要递归检出
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'  # 使用特定版本的 Python
+
+      - name: 安装 cibuildwheel
+        run: |
+          python -m pip install --upgrade pip
+          pip install cibuildwheel==2.16.2
+
+      - name: 构建 Wheel 包 (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: cibuildwheel --output-dir wheelhouse
+        env:
+          # 配置要构建的 Python 版本
+          CIBW_BUILD: "cp38-* cp39-* cp310-* cp311-* cp312-*"
+          # 排除不需要的平台/版本
+          CIBW_SKIP: "*-manylinux_i686 *-win32"
+          # Linux 特定配置
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux2014
+          # macOS 架构配置
+          CIBW_ARCHS_MACOS: x86_64 universal2 arm64
+          # 构建前运行的命令（如测试）
+          CIBW_BEFORE_BUILD: "pip install pytest"
+          CIBW_TEST_REQUIRES: pytest
+          CIBW_TEST_COMMAND: "pytest {project}/tests"
+
+      - name: 构建 Wheel 包 (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_BUILD: "cp38-* cp39-* cp310-* cp311-* cp312-*"
+          CIBW_SKIP: "*win32"
+          CIBW_BEFORE_BUILD: "pip install pytest"
+          CIBW_TEST_REQUIRES: pytest
+          CIBW_TEST_COMMAND: "pytest {project}/tests"
+
+      - name: 上传 Wheel 包
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
+  # 任务 2: 发布到 PyPI
+  publish:
+    name: 发布到 PyPI
+    needs: [build_wheels]  # 仅依赖 Wheel 构建任务
+    runs-on: ubuntu-latest
+    # 仅在推送标签时执行发布
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: 下载所有 Wheel 包
+        uses: actions/download-artifact@v4
+        with:
+          # 将所有平台的 Wheel 包合并到 dist 文件夹
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: 显示待发布文件
+        run: ls -l dist/
+
+      - name: 发布到 PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          # 可选：测试环境
+          # repository_url: https://test.pypi.org/legacy/
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
