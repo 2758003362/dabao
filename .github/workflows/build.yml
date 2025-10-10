@@ -1,22 +1,24 @@
-name: Linux 应用打包
+name: Linux 应用打包（仅 Debian 11）
 
 on:
   push:
     tags:
-      - 'v*.*.*'
-  workflow_dispatch:
+      - 'v*.*.*'  # 标签触发
+  workflow_dispatch:  # 支持手动触发
 
 jobs:
   build-linux:
-    runs-on: debian-11  # 目标系统匹配的版本
+    name: 在 Debian 11 上构建
+    runs-on: debian-11  # 仅使用 Debian 11
     steps:
-      - name: 检出代码
+      - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置 Python
+      - name: 配置 Python 环境
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: 安装依赖
         run: |
@@ -24,18 +26,20 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: 打包
-        run: pyinstaller --onefile --name myapp-linux main.py
+      - name: 执行打包
+        run: pyinstaller --onefile --name myapp-linux main.py  # 直接指定 Linux 文件名
 
-      - name: 上传产物
+      - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
           name: myapp-linux
           path: dist/myapp-linux
+          retention-days: 5
 
   release:
     needs: build-linux
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: 下载 Linux 产物
         uses: actions/download-artifact@v4
@@ -45,7 +49,7 @@ jobs:
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
-          files: myapp-linux
+          files: myapp-linux  # 仅上传 Linux 产物
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
