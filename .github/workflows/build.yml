@@ -1,55 +1,61 @@
-name: Linux 应用打包（仅 Debian 11）
+name: Ubuntu 20.04 单平台打包
 
 on:
   push:
     tags:
-      - 'v*.*.*'  # 标签触发
-  workflow_dispatch:  # 支持手动触发
+      - 'v*.*.*'  # 标签推送时触发（如 v1.0.13）
+  workflow_dispatch:  # 支持手动触发，方便测试
 
 jobs:
   build-linux:
-    name: 在 Debian 11 上构建
-    runs-on: debian-11  # 仅使用 Debian 11
+    name: 在 Ubuntu 20.04 上构建
+    runs-on: ubuntu-20.04  # 明确指定 Ubuntu 20.04（GLIBC 2.31）
     steps:
       - name: 检出仓库代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4  # 拉取最新代码
 
       - name: 配置 Python 环境
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: '3.11'  # 与你的项目 Python 版本一致
+          cache: 'pip'  # 缓存依赖，加速安装
 
-      - name: 安装依赖
+      - name: 安装项目依赖
         run: |
+          # 升级 pip 到最新版本
           python -m pip install --upgrade pip
+          # 安装 requirements.txt 中的依赖（确保文件存在）
           pip install -r requirements.txt
+          # 安装打包工具 pyinstaller
           pip install pyinstaller
 
-      - name: 执行打包
-        run: pyinstaller --onefile --name myapp-linux main.py  # 直接指定 Linux 文件名
+      - name: 执行打包操作
+        run: |
+          # 打包为单文件，指定输出名称为 myapp-linux
+          pyinstaller --onefile --name myapp-linux main.py
 
-      - name: 保存产物
+      - name: 保存打包产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-linux
-          path: dist/myapp-linux
-          retention-days: 5
+          name: myapp-ubuntu20
+          path: dist/myapp-linux  # 仅上传 Linux 产物
+          retention-days: 5  # 产物保留 5 天
 
   release:
+    # 等待构建完成后创建 Release
     needs: build-linux
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest  # 用最新版 Ubuntu 处理发布，不影响产物
+    if: startsWith(github.ref, 'refs/tags/')  # 仅标签触发时执行
     steps:
-      - name: 下载 Linux 产物
+      - name: 下载 Linux 打包产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-linux
+          name: myapp-ubuntu20  # 对应上面保存的产物名称
 
-      - name: 创建 Release
+      - name: 创建 GitHub Release 并上传文件
         uses: softprops/action-gh-release@v2
         with:
-          files: myapp-linux  # 仅上传 Linux 产物
-          generate_release_notes: true
+          files: myapp-linux  # 上传打包好的可执行文件
+          generate_release_notes: true  # 自动生成更新说明
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 自动获取仓库令牌
