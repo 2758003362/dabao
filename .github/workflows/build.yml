@@ -1,4 +1,4 @@
-name: 多平台 Python 应用打包
+name: Linux 应用打包
 
 on:
   push:
@@ -7,24 +7,16 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: 在 ${{ matrix.os }} 上构建
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # 关键：使用 Ubuntu 21.04（GLIBC 2.31，与你的系统匹配）
-        os: [ubuntu-21.04, windows-latest, macos-latest]
-
+  build-linux:
+    runs-on: ubuntu-21.04  # 目标系统匹配的版本
     steps:
-      - name: 检出仓库代码
+      - name: 检出代码
         uses: actions/checkout@v4
 
       - name: 配置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
       - name: 安装依赖
         run: |
@@ -32,42 +24,28 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: 执行打包操作
-        run: |
-          base_command="pyinstaller --onefile --name myapp"
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            $base_command-windows main.py
-          elif [ "${{ matrix.os }}" = "ubuntu-20.04" ]; then
-            $base_command-linux main.py
-          else
-            $base_command-macos main.py
-          fi
-        shell: bash
+      - name: 打包
+        run: pyinstaller --onefile --name myapp-linux main.py
 
-      - name: 保存构建产物
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-${{ matrix.os }}
-          path: dist/*
-          retention-days: 5
+          name: myapp-linux
+          path: dist/myapp-linux
 
   release:
-    needs: build
+    needs: build-linux
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: 下载全部工件
+      - name: 下载 Linux 产物
         uses: actions/download-artifact@v4
         with:
-          path: all_artifacts
+          name: myapp-linux
 
-      - name: 创建 GitHub Release
+      - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            all_artifacts/myapp-ubuntu-20.04/myapp-linux
-            all_artifacts/myapp-windows-latest/myapp-windows.exe
-            all_artifacts/myapp-macos-latest/myapp-macos
+          files: myapp-linux
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
