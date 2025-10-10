@@ -1,32 +1,74 @@
-name: 构建纯Python轮包
+name: Build Multiplatform Python App
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    tags:
+      - 'v*'  # 只在打标签时触发，如 v1.0.0
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
   build:
+    name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
+        # 可以根据需要添加不同架构，如 macos-14 等
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: 设置Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.11'  # 指定 Python 版本
+          cache: 'pip'
 
-      - name: 安装构建工具
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install setuptools wheel build
+          pip install -r requirements.txt
+          pip install pyinstaller  # 安装打包工具
 
-      - name: 构建纯Python轮包
-        run: python -m build --wheel  # 纯Python构建方式，无需cibuildwheel
+      - name: Build with PyInstaller
+        run: |
+          # 根据不同系统设置输出目录和文件名
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            pyinstaller --onefile --name myapp-${{ matrix.os }} main.py
+          elif [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            pyinstaller --onefile --name myapp-${{ matrix.os }} main.py
+          else
+            pyinstaller --onefile --name myapp-${{ matrix.os }} main.py
+          fi
+        shell: bash
 
-      - name: 上传轮包
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          path: dist/*.whl
+          name: myapp-${{ matrix.os }}
+          path: |
+            dist/*.exe
+            dist/myapp-*
+            !dist/_internal
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/myapp-ubuntu-latest/myapp-ubuntu-latest
+            artifacts/myapp-windows-latest/*.exe
+            artifacts/myapp-macos-latest/myapp-macos-latest
+          draft: false
+          prerelease: false
