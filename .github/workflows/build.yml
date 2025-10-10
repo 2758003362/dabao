@@ -13,8 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 关键：使用 Ubuntu 20.04（GLIBC 2.31，与你的系统匹配）
-        os: [ubuntu-20.04, windows-latest, macos-latest]
+        # 关键：使用 Ubuntu 21.04（GLIBC 2.31，与你的系统匹配）
+        os: [ubuntu-21.04, windows-latest, macos-latest]
 
     steps:
       - name: 检出仓库代码
