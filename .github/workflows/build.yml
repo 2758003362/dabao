@@ -13,8 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 关键修改：使用 Ubuntu 18.04
-        os: [ubuntu-18.04, windows-latest, macos-latest]
+        # 关键：使用 Ubuntu 20.04（GLIBC 2.31，与你的系统匹配）
+        os: [ubuntu-20.04, windows-latest, macos-latest]
 
     steps:
       - name: 检出仓库代码
@@ -23,18 +23,8 @@ jobs:
       - name: 配置 Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'  # 注意：Python 3.11 在 Ubuntu 18.04 上需要额外依赖
+          python-version: '3.11'
           cache: 'pip'
-
-      # Ubuntu 18.04 额外步骤：安装 Python 3.11 所需的系统依赖
-      - name: 安装系统依赖（Ubuntu 18.04）
-        if: matrix.os == 'ubuntu-18.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y software-properties-common
-          sudo add-apt-repository ppa:deadsnakes/ppa -y
-          sudo apt-get update
-          sudo apt-get install -y python3.11-dev python3.11-distutils
 
       - name: 安装依赖
         run: |
@@ -47,7 +37,7 @@ jobs:
           base_command="pyinstaller --onefile --name myapp"
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             $base_command-windows main.py
-          elif [ "${{ matrix.os }}" = "ubuntu-18.04" ]; then
+          elif [ "${{ matrix.os }}" = "ubuntu-20.04" ]; then
             $base_command-linux main.py
           else
             $base_command-macos main.py
@@ -75,7 +65,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            all_artifacts/myapp-ubuntu-18.04/myapp-linux
+            all_artifacts/myapp-ubuntu-20.04/myapp-linux
             all_artifacts/myapp-windows-latest/myapp-windows.exe
             all_artifacts/myapp-macos-latest/myapp-macos
           generate_release_notes: true
