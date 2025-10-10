@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-21.04  # 目标系统匹配的版本
+    runs-on: debian-11  # 目标系统匹配的版本
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
