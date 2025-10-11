@@ -31,23 +31,20 @@ jobs:
           fi
           ./python/bin/python --version
 
-      - name: 安装依赖和 pyinstaller
+      - name: 安装依赖（包含 werkzeug）
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 安装 requirements.txt 中的所有依赖（包括新增的flask）
+          # 确保 requirements.txt 已包含 flask 和 werkzeug
           ./python/bin/python -m pip install -r requirements.txt
           ./python/bin/python -m pip install pyinstaller
 
-      - name: 用静态 Python 打包（确保包含flask）
+      - name: 打包（包含 werkzeug 依赖）
         run: |
-          # 强制包含flask及其常用子模块，避免遗漏
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
-            --hidden-import=flask.app \
-            --hidden-import=flask.cli \
-            --hidden-import=flask.config \
-            --hidden-import=flask.json \
+            --hidden-import=werkzeug \
+            --hidden-import=werkzeug.serving \
             main.py
 
       - name: 保存产物
