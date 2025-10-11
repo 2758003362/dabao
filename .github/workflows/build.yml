@@ -1,55 +1,71 @@
-name: Debian 11 快速打包（适配 GLIBC 2.31）
+name: 极速 Debian 11 打包
 
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*'
   workflow_dispatch:
 
 jobs:
-  build-linux:
-    name: 在 Debian 11 上构建
-    runs-on: debian-11  # 关键：使用 Debian 11，GLIBC 2.31 且 runner 资源充足
+  build:
+    runs-on: ubuntu-20.04  # 官方环境，GLIBC 2.31，启动最快
     steps:
-      - name: 检出仓库代码
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 配置 Python 环境
-        uses: actions/setup-python@v5
+      - name: 设置 Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: 安装依赖
+      - name: 缓存 PyInstaller 构建
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/pip
+            build/
+            dist/
+            __pycache__/
+          key: ${{ runner.os }}-pyinstaller-${{ hashFiles('**/requirements.txt', '**/main.py') }}
+          restore-keys: |
+            ${{ runner.os }}-pyinstaller-
+
+      - name: 安装依赖和打包
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+          pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+          pyinstaller --onefile --clean --noconfirm main.py
 
-      - name: 执行打包
-        run: pyinstaller --onefile --name myapp-linux main.py
-
-      - name: 保存产物
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-debian11
-          path: dist/myapp-linux
-          retention-days: 5
+          name: myapp-linux-glibc2.31
+          path: dist/
+          retention-days: 7
 
   release:
-    needs: build-linux
+    needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+
     steps:
-      - name: 下载产物
+      - name: 下载构建产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-debian11
+          name: myapp-linux-glibc2.31
 
-      - name: 创建 Release
+      - name: 重命名文件
+        run: |
+          mv myapp-linux myapp-linux-glibc2.31
+          chmod +x myapp-linux-glibc2.31
+
+      - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: myapp-linux
+          files: myapp-linux-glibc2.31
           generate_release_notes: true
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
