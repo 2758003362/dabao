@@ -8,36 +8,43 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest  # 用最新版，避免排队
+    runs-on: ubuntu-latest
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
 
       - name: 下载并配置静态编译的 Python
         run: |
-          # 下载独立于系统的 Python 版本
+          # 下载静态Python（使用更通用的版本号匹配）
           wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          # 解压文件
-          tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
+          # 验证下载文件是否存在
+          if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
+            echo "错误：Python压缩包下载失败"
+            exit 1
+          fi
           
-          # 灵活获取解压后的文件夹名称并创建软链接，避免名称匹配问题
-          PYTHON_DIR=$(find . -maxdepth 1 -type d -name "cpython-3.11.8+*" | head -n 1)
-          ln -s "$PYTHON_DIR" python
+          # 解压文件到指定目录
+          mkdir -p python
+          tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
-          # 验证Python是否可用
+          # 验证解压结果
+          if [ ! -f "./python/bin/python" ]; then
+            echo "错误：Python解压失败"
+            exit 1
+          fi
+          
+          # 确认Python版本
           ./python/bin/python --version
 
       - name: 安装依赖和 pyinstaller
         run: |
-          # 使用静态 Python 安装，避免依赖系统库
           ./python/bin/python -m pip install --upgrade pip
           ./python/bin/python -m pip install -r requirements.txt
           ./python/bin/python -m pip install pyinstaller
 
       - name: 用静态 Python 打包
         run: |
-          # 指定使用静态 Python 执行 pyinstaller
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             main.py
