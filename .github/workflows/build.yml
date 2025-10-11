@@ -13,13 +13,20 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 下载静态编译的 Python（不依赖系统 GLIBC）
+      - name: 下载并配置静态编译的 Python
         run: |
-          # 下载独立于系统的 Python 版本（支持 GLIBC 2.17+）
+          # 下载独立于系统的 Python 版本
           wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
+          
+          # 解压文件
           tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
-          # 重命名为 python 方便使用
-          mv python-3.11.8+20240224-x86_64-unknown-linux-gnu python
+          
+          # 灵活获取解压后的文件夹名称并创建软链接，避免名称匹配问题
+          PYTHON_DIR=$(find . -maxdepth 1 -type d -name "cpython-3.11.8+*" | head -n 1)
+          ln -s "$PYTHON_DIR" python
+          
+          # 验证Python是否可用
+          ./python/bin/python --version
 
       - name: 安装依赖和 pyinstaller
         run: |
