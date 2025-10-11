@@ -1,71 +1,59 @@
-name: 极速 Debian 11 打包
+name: 快速构建（兼容 GLIBC 2.31）
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*.*.*'
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-20.04  # 官方环境，GLIBC 2.31，启动最快
+  build-linux:
+    runs-on: ubuntu-latest  # 用最新版，避免排队
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 设置 Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: 缓存 PyInstaller 构建
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cache/pip
-            build/
-            dist/
-            __pycache__/
-          key: ${{ runner.os }}-pyinstaller-${{ hashFiles('**/requirements.txt', '**/main.py') }}
-          restore-keys: |
-            ${{ runner.os }}-pyinstaller-
-
-      - name: 安装依赖和打包
+      - name: 下载静态编译的 Python（不依赖系统 GLIBC）
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
-          pyinstaller --onefile --clean --noconfirm main.py
+          # 下载独立于系统的 Python 版本（支持 GLIBC 2.17+）
+          wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
+          tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
+          # 重命名为 python 方便使用
+          mv python-3.11.8+20240224-x86_64-unknown-linux-gnu python
 
-      - name: 上传构建产物
+      - name: 安装依赖和 pyinstaller
+        run: |
+          # 使用静态 Python 安装，避免依赖系统库
+          ./python/bin/python -m pip install --upgrade pip
+          ./python/bin/python -m pip install -r requirements.txt
+          ./python/bin/python -m pip install pyinstaller
+
+      - name: 用静态 Python 打包
+        run: |
+          # 指定使用静态 Python 执行 pyinstaller
+          ./python/bin/pyinstaller --onefile --name myapp-linux \
+            --paths=./python/lib/python3.11/site-packages \
+            main.py
+
+      - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-linux-glibc2.31
-          path: dist/
-          retention-days: 7
+          name: myapp-static
+          path: dist/myapp-linux
 
   release:
-    needs: build
+    needs: build-linux
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-
     steps:
-      - name: 下载构建产物
+      - name: 下载产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-linux-glibc2.31
+          name: myapp-static
 
-      - name: 重命名文件
-        run: |
-          mv myapp-linux myapp-linux-glibc2.31
-          chmod +x myapp-linux-glibc2.31
-
-      - name: 创建 GitHub Release
+      - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
-          files: myapp-linux-glibc2.31
-          generate_release_notes: true
-          draft: false
-          prerelease: false
+          files: myapp-linux
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
