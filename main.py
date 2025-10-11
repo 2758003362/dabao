@@ -72,5 +72,5 @@ def delete_user(user_id):
 
 # 启动服务
 if __name__ == '__main__':
-    # 允许外部访问，端口为5000，开启调试模式
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # 关闭调试模式，避免权限问题
+    app.run(host='0.0.0.0', port=5000, debug=False)
