@@ -13,24 +13,26 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装musl工具链
+      - name: 安装基础工具（含tree和findutils）
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y musl-tools
-          if ! command -v musl-gcc &> /dev/null; then
-            echo "错误：musl-tools安装失败"
-            exit 1
-          fi
-          echo "✅ musl工具链安装完成"
+          sudo apt-get install -y musl-tools tree findutils
+          for tool in musl-gcc tree find; do
+            if ! command -v $tool &> /dev/null; then
+              echo "错误：工具$tool安装失败"
+              exit 1
+            fi
+          done
+          echo "✅ 基础工具安装完成"
 
-      - name: 配置静态Python（自动适配目录结构）
+      - name: 配置静态Python（优化查找逻辑）
         run: |
-          # 确认存在的3.10.12版本
+          # 使用确认存在的Python版本
           PYTHON_TAR="cpython-3.10.12+20230726-x86_64-unknown-linux-musl-install_only.tar.gz"
           PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20230726/$PYTHON_TAR"
           EXPECTED_SHA256="9080014bee2d4bd1f96bcbebf447d40c35ae9354382246add1160bd0d433ebf7"
           
-          # 下载
+          # 下载Python压缩包
           echo "开始下载静态Python: $PYTHON_URL"
           if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 \
                    --max-redirect=10 --content-disposition "$PYTHON_URL" -O "$PYTHON_TAR"; then
@@ -48,43 +50,66 @@ jobs:
             exit 1
           fi
           
-          # 解压（保留原始目录结构，不强制strip，避免路径错误）
+          # 解压保留原始结构
           mkdir -p python-musl
-          echo "开始解压Python压缩包（显示详细结构）..."
-          if ! tar -xzvf "$PYTHON_TAR" -C python-musl; then  # 移除--strip-components，保留原始结构
+          echo "开始解压Python压缩包..."
+          if ! tar -xzvf "$PYTHON_TAR" -C python-musl; then
             echo "错误：Python压缩包解压失败"
             exit 1
           fi
           
-          # 关键修复：自动查找Python可执行文件（适配不同目录结构）
-          echo "查找Python可执行文件..."
-          PYTHON_BIN=$(find python-musl -name "python" -type f -path "*/bin/python" | head -n 1)
+          # 优化Python查找规则
+          echo "=== 查找Python可执行文件 ==="
+          ALL_PYTHON_FILES=$(find python-musl -name "python" -type f | sort)
+          if [ -n "$ALL_PYTHON_FILES" ]; then
+            echo "找到的'python'文件列表："
+            echo "$ALL_PYTHON_FILES"
+          fi
           
+          # 优先选择bin目录下的Python
+          PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python$" | head -n 1)
+          # 容错机制：选择第一个找到的文件
+          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
+            echo "警告：未找到bin目录下的Python，尝试选择第一个可执行文件"
+            PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | head -n 1)
+          fi
+          
+          # 最终验证
           if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
             echo "错误：未找到Python可执行文件"
-            # 打印目录结构辅助排查
-            echo "解压后的目录结构："
-            tree python-musl  # 显示完整结构，明确文件位置
+            echo "解压后的完整目录结构："
+            tree python-musl
+            exit 1
+          fi
+          
+          # 验证是否为二进制可执行文件
+          if ! file "$PYTHON_BIN" | grep -q "ELF.*executable"; then
+            echo "错误：$PYTHON_BIN不是二进制可执行文件"
+            file "$PYTHON_BIN"
             exit 1
           fi
           
           # 验证静态链接
-          echo "Python文件路径：$PYTHON_BIN"
-          echo "Python文件类型检测结果："
-          file "$PYTHON_BIN"
+          echo "=== Python文件信息 ==="
+          echo "路径：$PYTHON_BIN"
+          echo "类型：$(file "$PYTHON_BIN" | awk -F ',' '{print $1}')"
           
           if ! file "$PYTHON_BIN" | grep -q "statically linked"; then
             echo "错误：当前Python版本不是静态链接！"
             exit 1
           fi
           
-          # 记录Python路径和site-packages路径（供后续使用）
+          # 记录路径到环境变量
           echo "PYTHON_BIN=$PYTHON_BIN" >> $GITHUB_ENV
-          # 提取site-packages路径（bin的同级目录下的lib/python3.10/site-packages）
+          # 动态查找site-packages路径
           PYTHON_LIB=$(dirname "$PYTHON_BIN")/../lib/python3.10/site-packages
+          if [ ! -d "$PYTHON_LIB" ]; then
+            echo "警告：默认site-packages路径不存在，动态查找..."
+            PYTHON_LIB=$(find python-musl -name "site-packages" -type d | grep "python3.10" | head -n 1)
+          fi
           echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
           
-          echo "✅ 确认是静态链接Python，版本：$("$PYTHON_BIN" --version)"
+          echo "✅ 静态Python配置完成，版本：$("$PYTHON_BIN" --version)"
 
       - name: 编译静态libaio
         run: |
@@ -93,6 +118,11 @@ jobs:
           cd libaio-libaio-0.3.113
           
           sudo cp src/libaio.h /usr/include/
+          if [ ! -f "/usr/include/libaio.h" ]; then
+            echo "错误：libaio.h复制失败"
+            exit 1
+          fi
+          
           make CC=musl-gcc CFLAGS="-fPIC -static -I/usr/include" LDFLAGS="-static"
           if [ ! -f "src/libaio.so.1.0.1" ]; then
             echo "错误：libaio编译失败"
@@ -108,10 +138,11 @@ jobs:
 
       - name: 安装Python依赖
         run: |
-          # 使用环境变量中的Python路径
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
-          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            echo "错误：Python路径无效"
+          PYTHON_LIB="${{ env.PYTHON_LIB }}"
+          
+          if [ -z "$PYTHON_BIN" ] || [ -z "$PYTHON_LIB" ]; then
+            echo "错误：Python路径或依赖路径缺失"
             exit 1
           fi
           
@@ -124,16 +155,19 @@ jobs:
             pyinstaller==6.16.0 \
             --no-cache-dir
           
-          if ! $PYTHON_BIN -c "import dmPython" &> /dev/null; then
-            echo "错误：dmPython导入失败"
+          if ! $PYTHON_BIN -c "import dmPython; import pandas; import flask" &> /dev/null; then
+            echo "错误：依赖导入失败"
+            DM_PYTHON_PATH=$($PYTHON_BIN -c "import dmPython; print(dmPython.__file__)")
+            echo "dmPython路径：$DM_PYTHON_PATH"
+            file "$DM_PYTHON_PATH"
             exit 1
           fi
-          echo "✅ 依赖安装完成"
+          echo "✅ 所有Python依赖安装完成"
 
       - name: 静态打包应用
         run: |
           if [ ! -f "./main.py" ]; then
-            echo "错误：未找到main.py"
+            echo "错误：未找到入口脚本main.py"
             exit 1
           fi
           
@@ -141,28 +175,37 @@ jobs:
           PYTHON_LIB="${{ env.PYTHON_LIB }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           
-          # 验证路径有效性
-          if [ -z "$PYTHON_BIN" ] || [ -z "$PYTHON_LIB" ] || [ -z "$LIB_AIO_PATH" ]; then
-            echo "错误：环境变量路径缺失"
-            exit 1
-          fi
+          for path in "$PYTHON_BIN" "$PYTHON_LIB" "$LIB_AIO_PATH"; do
+            if [ -z "$path" ] || [ ! -e "$path" ]; then
+              echo "错误：路径$path无效"
+              exit 1
+            fi
+          done
           
-          # 使用动态获取的Python路径和依赖路径
+          echo "开始打包，使用Python路径：$PYTHON_BIN"
           $PYTHON_BIN -m PyInstaller --onefile --name myapp-linux \
             --paths="$PYTHON_LIB" \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
             --hidden-import=pandas \
+            --hidden-import=pandas.core \
+            --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
             --noupx \
             ./main.py
           
           if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：打包失败"
+            echo "错误：打包失败，未生成产物"
+            if [ -f "build/myapp-linux/warn-myapp-linux.txt" ]; then
+              echo "打包警告日志："
+              cat build/myapp-linux/warn-myapp-linux.txt
+            fi
             exit 1
           fi
-          echo "✅ 打包完成"
+          echo "✅ 打包完成，产物信息："
+          file dist/myapp-linux
+          echo "产物大小：$(du -sh dist/myapp-linux | awk '{print $1}')"
 
       - name: 保存产物
         uses: actions/upload-artifact@v4
