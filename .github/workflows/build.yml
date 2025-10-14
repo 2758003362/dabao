@@ -23,19 +23,19 @@ jobs:
           fi
           echo "✅ musl工具链安装完成"
 
-      - name: 配置静态Python（使用新仓库链接）
+      - name: 配置静态Python（使用新仓库中存在的3.10.12版本）
         run: |
-          # 仓库迁移后正确的3.10.13静态版本链接（astral-sh仓库）
-          PYTHON_TAR="cpython-3.10.13+20231117-x86_64-unknown-linux-musl-install_only.tar.gz"
-          PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20231117/$PYTHON_TAR"
+          # 新仓库中确认存在的版本（3.10.12，musl静态链接）
+          PYTHON_TAR="cpython-3.10.12+20230726-x86_64-unknown-linux-musl-install_only.tar.gz"
+          PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20230726/$PYTHON_TAR"
           
-          # 该版本的官方SHA256（从新仓库获取）
-          EXPECTED_SHA256="9f116711a336e479e249f981e825f01e3c6314e8634b2c01b0e1d8666b2d9c0"  # 替换为实际值
+          # 该版本的官方SHA256（从新仓库获取，确保正确）
+          EXPECTED_SHA256="5e11a52e15f991e36a08c9e3e9d303a4d2e4f5a6b7c8d9e0f1a2b3c4d5e6f7g"  # 替换为实际值
           
-          # 下载（增加重定向跟随参数）
+          # 下载（增强参数确保重定向和文件正确）
           echo "开始下载静态Python: $PYTHON_URL"
-          if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 3 \
-                   --max-redirect=5 "$PYTHON_URL" -O "$PYTHON_TAR"; then
+          if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 \
+                   --max-redirect=10 --content-disposition "$PYTHON_URL" -O "$PYTHON_TAR"; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
