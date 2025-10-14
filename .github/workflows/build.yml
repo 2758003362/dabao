@@ -3,8 +3,8 @@ name: 达梦API服务打包（兼容GLIBC 2.31）
 on:
   push:
     tags:
-      - 'v*.*.*'  # 推送标签触发构建
-  workflow_dispatch:  # 手动触发，方便测试
+      - 'v*.*.*'
+  workflow_dispatch:
 
 jobs:
   build-linux:
@@ -13,74 +13,74 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置静态Python环境（兼容GLIBC 2.31）
+      - name: 配置静态Python环境
         run: |
-          # 下载静态Python压缩包（长期稳定链接）
           wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          # 验证下载
           if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
-          # 解压
           mkdir -p python
           tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
-          # 验证Python可用性
           if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败"
             exit 1
           fi
           ./python/bin/python --version
 
-      - name: 动态识别deb格式，获取libaio.so.1（100%成功）
+      - name: 全格式支持，获取libaio.so.1（最终解决方案）
         run: |
-          # 1. 从Ubuntu官方旧归档源下载libaio1 deb包（永久稳定）
+          # 1. 安装zstd工具（支持.zst格式解压）
+          sudo apt-get update -y
+          sudo apt-get install -y zstd
+          
+          # 2. 从官方旧归档下载deb包（永久稳定）
           wget http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb || {
             echo "错误：deb包下载失败"
             exit 1
           }
           
-          # 2. 动态识别deb包内的数据文件（可能是data.tar.gz或data.tar.xz）
-          # 列出deb包内容，筛选出data.tar开头的文件
+          # 3. 动态识别数据文件格式（支持.gz/.xz/.zst）
           DATA_TAR=$(ar t libaio1_0.3.113-4_amd64.deb | grep "^data.tar")
           if [ -z "$DATA_TAR" ]; then
-            echo "错误：deb包内未找到data.tar文件"
+            echo "错误：未找到data.tar文件"
             exit 1
           fi
-          echo "识别到deb数据文件：$DATA_TAR"
+          echo "识别到数据文件：$DATA_TAR"
           
-          # 3. 解压deb包中的数据文件
+          # 4. 解压deb包中的数据文件
           ar x libaio1_0.3.113-4_amd64.deb "$DATA_TAR"
           
-          # 4. 解压data.tar文件（根据后缀自动选择解压参数）
+          # 5. 根据格式解压（支持所有常见压缩格式）
           if [[ "$DATA_TAR" == *.gz ]]; then
             tar -xzf "$DATA_TAR" ./usr/lib/x86_64-linux-gnu/libaio.so.1.0.1
           elif [[ "$DATA_TAR" == *.xz ]]; then
             tar -xf "$DATA_TAR" ./usr/lib/x86_64-linux-gnu/libaio.so.1.0.1
+          elif [[ "$DATA_TAR" == *.zst ]]; then
+            # 使用zstd工具解压.zst格式
+            tar -I zstd -xf "$DATA_TAR" ./usr/lib/x86_64-linux-gnu/libaio.so.1.0.1
           else
-            echo "错误：不支持的data.tar格式"
+            echo "错误：不支持的格式 $DATA_TAR"
             exit 1
           fi
           
-          # 5. 部署libaio.so.1到系统库目录
+          # 6. 部署库文件并验证
           sudo cp ./usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/
           sudo ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/libaio.so.1
-          
-          # 6. 更新系统库缓存，验证部署
           sudo ldconfig
+          
           if ! ldconfig -p | grep -q "libaio.so.1"; then
-            echo "错误：libaio.so.1部署失败"
+            echo "错误：libaio部署失败"
             exit 1
           fi
           echo "✅ libaio.so.1部署成功"
 
-      - name: 安装Python项目依赖（含dmPython）
+      - name: 安装Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 安装依赖（dmPython已能找到libaio.so.1）
           ./python/bin/python -m pip install \
             dmPython==2.5.1 \
             pandas==2.1.4 \
@@ -88,7 +88,7 @@ jobs:
             werkzeug==2.3.7 \
             pyinstaller==6.16.0
 
-      - name: 打包Linux可执行程序（携带libaio.so.1）
+      - name: 打包应用
         run: |
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
@@ -98,10 +98,10 @@ jobs:
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
-            --add-binary="/usr/lib/x86_64-linux-gnu/libaio.so.1:." \  # 携带libaio库
+            --add-binary="/usr/lib/x86_64-linux-gnu/libaio.so.1:." \
             main.py
 
-      - name: 保存打包产物
+      - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
           name: myapp-static
@@ -113,12 +113,12 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: 下载打包产物
+      - name: 下载产物
         uses: actions/download-artifact@v4
         with:
           name: myapp-static
 
-      - name: 创建GitHub Release
+      - name: 创建Release
         uses: softprops/action-gh-release@v2
         with:
           files: myapp-linux
