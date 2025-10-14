@@ -54,7 +54,8 @@ def get_multiple_result_sets():
 
     except Exception as e:
         print(f"操作错误: {str(e)}")
-        conn.rollback()
+        if 'conn' in locals() and conn:
+            conn.rollback()
     finally:
         if 'cursor' in locals():
             cursor.close()
@@ -89,19 +90,18 @@ users = [
 ]
 
 
-# 1. 获取所有用户 (GET请求)
+# 1. 获取所有用户 (GET请求) - 实际返回存储过程结果
 @app.route('/users', methods=['GET'])
 def get_users():
     tables = get_multiple_result_sets()
     indent = 4
-    # 转换为JSON
+    # 转换为JSON（处理datetime类型）
     json_result = json.dumps(
         tables,
         default=convert_datetime,
         ensure_ascii=False,
         indent=indent
     )
-
     return json_result
 
 
@@ -114,7 +114,6 @@ def get_user(user_id):
     return jsonify({"error": "用户不存在"}), 404
 
 
-# 启动服务
+# 启动服务 - 关键：关闭debug模式，避免权限错误
 if __name__ == '__main__':
-    # 允许外部访问，端口为5000，开启调试模式
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
