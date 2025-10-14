@@ -1,108 +1,102 @@
-name: 达梦API服务打包（兼容GLIBC 2.31）
+import dmPython
+import pandas as pd
 
-on:
-  push:
-    tags:
-      - 'v*.*.*'  # 推送标签（如v1.0.25）时触发构建
-  workflow_dispatch:  # 允许手动触发，方便测试与调试
+from flask import Flask, jsonify, request
 
-jobs:
-  build-linux:
-    runs-on: ubuntu-latest  # 使用最新版Ubuntu，减少排队时间
-    steps:
-      # 步骤1：检出仓库代码
-      - name: 检出仓库代码
-        uses: actions/checkout@v4  # 拉取当前仓库最新代码
+import json
+from typing import List, Dict
 
-      # 步骤2：配置静态Python环境（兼容GLIBC 2.31）
-      - name: 下载并解压静态Python
-        run: |
-          # 下载独立Python压缩包（不依赖系统GLIBC版本）
-          wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
-          
-          # 验证压缩包是否下载成功
-          if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
-            echo "错误：Python压缩包下载失败，请检查网络"
-            exit 1
-          fi
-          
-          # 创建Python目录并解压（--strip-components=1移除顶层目录）
-          mkdir -p python
-          tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
-          
-          # 验证Python环境是否可用
-          if [ ! -f "./python/bin/python" ]; then
-            echo "错误：Python解压失败，未找到可执行文件"
-            exit 1
-          fi
-          ./python/bin/python --version  # 输出Python版本，确认环境正常
+from datetime import datetime
 
-      # 步骤3：可靠安装libaio1（dmPython必需依赖，解决404错误）
-      - name: 安装libaio1系统依赖
-        run: |
-          # 1. 更新软件源列表（关键：获取最新包路径，避免404）
-          sudo apt-get update -y
-          
-          # 2. 安装libaio1（指定稳定版本，避免依赖冲突）
-          sudo apt-get install -y libaio1=0.3.113-5
-          
-          # 3. 验证安装结果（确保依赖确实安装成功）
-          if ! dpkg -l | grep -q "libaio1"; then
-            echo "错误：libaio1安装失败，无法继续打包"
-            exit 1
-          fi
-          echo "✅ libaio1安装成功"
+# 创建Flask应用实例
+app = Flask(__name__)
 
-      # 步骤4：安装Python项目依赖（含达梦驱动、Flask等）
-      - name: 安装Python依赖包
-        run: |
-          # 升级pip到最新版，减少依赖安装错误
-          ./python/bin/python -m pip install --upgrade pip
-          
-          # 安装指定版本的依赖（确保稳定性与兼容性）
-          ./python/bin/python -m pip install \
-            dmPython==2.5.1 \          # 达梦数据库Python驱动
-            pandas==2.1.4 \           # 数据处理库
-            flask==2.3.3 \             # Web框架
-            werkzeug==2.3.7 \          # Flask依赖的WSGI工具
-            pyinstaller==6.16.0        # 打包工具
+def get_multiple_result_sets():
+    # 达梦数据库连接参数（根据实际环境调整）
+    conn_params = {
+        'server': '192.168.0.191',  # 数据库服务器IP
+        'user': 'JZX',              # 数据库用户名
+        'password': 'XFgs@345',     # 数据库密码
+        'port': 5236,               # 达梦默认端口
+        'autoCommit': True          # 开启自动提交（避免事务阻塞）
+    }
 
-      # 步骤5：用PyInstaller打包成单文件可执行程序
-      - name: 打包Linux可执行文件
-        run: |
-          ./python/bin/pyinstaller --onefile --name myapp-linux \
-            --paths=./python/lib/python3.11/site-packages \  # 指定依赖包路径
-            --hidden-import=flask \                        # 强制包含Flask核心模块
-            --hidden-import=dmPython \                     # 强制包含达梦驱动
-            --hidden-import=dmPython.dbapi2 \              # dmPython隐藏依赖（避免运行时缺失）
-            --hidden-import=pandas \                       # 强制包含pandas
-            --hidden-import=pandas.core \                  # pandas核心子模块
-            --hidden-import=pandas.io \                    # pandas IO子模块（处理数据读写）
-            main.py  # 项目入口文件（Flask服务主程序）
+    result_sets = []  # 存储存储过程返回的所有结果集
+    try:
+        # 建立数据库连接
+        conn = dmPython.connect(**conn_params)
+        cursor = conn.cursor()
 
-      # 步骤6：上传打包产物到GitHub（便于下载）
-      - name: 保存打包产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: myapp-static  # 产物名称（下载时显示）
-          path: dist/myapp-linux  # 产物路径（PyInstaller默认输出到dist目录）
-          retention-days: 7  # 产物保留7天（可按需调整）
+        # 调用达梦存储过程（JZX.GET_TEST0）
+        cursor.callproc("JZX.GET_TEST0")
 
-  # 步骤7：创建GitHub Release（仅标签触发时执行，便于分发）
-  release:
-    needs: build-linux  # 依赖build-linux任务成功后才执行
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')  # 仅推送标签时触发
-    steps:
-      - name: 下载打包产物
-        uses: actions/download-artifact@v4
-        with:
-          name: myapp-static  # 对应步骤6的产物名称
+        # 循环获取所有结果集（处理存储过程多表返回场景）
+        while True:
+            # 获取当前结果集的列名（无数据时cursor.description为None）
+            columns = [col[0] for col in cursor.description] if cursor.description else []
+            # 读取当前结果集所有行，转换为字典格式（列名:值）
+            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            
+            if rows:  # 若有数据，添加到结果列表
+                result_sets.append(rows)
+            
+            # 检查是否还有下一个结果集，无则退出循环
+            if not cursor.nextset():
+                break
 
-      - name: 创建GitHub Release并上传产物
-        uses: softprops/action-gh-release@v2
-        with:
-          files: myapp-linux  # 上传到Release的文件
-          generate_release_notes: true  # 自动生成Release说明（含提交记录）
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub自动提供的令牌（无需手动配置）
+        conn.commit()  # 提交事务（若存储过程包含写操作）
+
+    except Exception as e:
+        # 捕获异常并打印错误信息，回滚事务
+        print(f"达梦数据库操作异常: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+    finally:
+        # 关闭游标和连接，释放资源（避免内存泄漏）
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals() and conn:
+            conn.close()
+
+    return result_sets
+
+def convert_datetime(obj):
+    """自定义JSON序列化函数，处理datetime类型"""
+    if isinstance(obj, datetime):
+        return obj.strftime('%Y-%m-%d %H:%M:%S')  # 统一时间格式为字符串
+    raise TypeError(f"不支持序列化类型: {type(obj)}")
+
+# API接口1：获取达梦存储过程返回的所有数据
+@app.route('/users', methods=['GET'])
+def get_users():
+    # 调用函数获取数据库数据
+    db_data = get_multiple_result_sets()
+    # 转换为JSON字符串（支持中文、格式化输出）
+    json_response = json.dumps(
+        db_data,
+        default=convert_datetime,
+        ensure_ascii=False,
+        indent=4
+    )
+    return json_response
+
+# API接口2：获取单个模拟用户（保留示例功能，可按需删除）
+@app.route('/users/<int:user_id>', methods=['GET'])
+def get_user(user_id):
+    mock_users = [
+        {"id": 1, "name": "Alice", "age": 30},
+        {"id": 2, "name": "Bob", "age": 25}
+    ]
+    # 查找匹配ID的用户
+    target_user = next((u for u in mock_users if u['id'] == user_id), None)
+    if target_user:
+        return jsonify({"user": target_user})
+    return jsonify({"error": "用户不存在"}), 404  # 404状态码：资源未找到
+
+# 启动Flask服务（生产环境配置）
+if __name__ == '__main__':
+    app.run(
+        host='0.0.0.0',  # 允许局域网内其他设备访问
+        port=5000,       # 服务端口（可修改，需避免端口占用）
+        debug=False      # 关闭调试模式，解决权限与性能问题
+    )
