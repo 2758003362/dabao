@@ -23,13 +23,11 @@ jobs:
           fi
           echo "✅ musl工具链安装完成"
 
-      - name: 配置静态Python（使用正确SHA256）
+      - name: 配置静态Python（自动适配目录结构）
         run: |
-          # 新仓库中存在的3.10.12版本
+          # 确认存在的3.10.12版本
           PYTHON_TAR="cpython-3.10.12+20230726-x86_64-unknown-linux-musl-install_only.tar.gz"
           PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20230726/$PYTHON_TAR"
-          
-          # 使用用户提供的实际SHA256值（从错误日志提取，确保匹配）
           EXPECTED_SHA256="9080014bee2d4bd1f96bcbebf447d40c35ae9354382246add1160bd0d433ebf7"
           
           # 下载
@@ -40,7 +38,7 @@ jobs:
             exit 1
           fi
           
-          # 校验完整性（使用正确的实际值）
+          # 校验完整性
           echo "校验压缩包完整性..."
           ACTUAL_SHA256=$(sha256sum "$PYTHON_TAR" | awk '{print $1}')
           if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
@@ -50,20 +48,28 @@ jobs:
             exit 1
           fi
           
-          # 解压
+          # 解压（保留原始目录结构，不强制strip，避免路径错误）
           mkdir -p python-musl
-          if ! tar -xzf "$PYTHON_TAR" -C python-musl --strip-components=1; then
-            echo "错误：Python解压失败"
+          echo "开始解压Python压缩包（显示详细结构）..."
+          if ! tar -xzvf "$PYTHON_TAR" -C python-musl; then  # 移除--strip-components，保留原始结构
+            echo "错误：Python压缩包解压失败"
+            exit 1
+          fi
+          
+          # 关键修复：自动查找Python可执行文件（适配不同目录结构）
+          echo "查找Python可执行文件..."
+          PYTHON_BIN=$(find python-musl -name "python" -type f -path "*/bin/python" | head -n 1)
+          
+          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
+            echo "错误：未找到Python可执行文件"
+            # 打印目录结构辅助排查
+            echo "解压后的目录结构："
+            tree python-musl  # 显示完整结构，明确文件位置
             exit 1
           fi
           
           # 验证静态链接
-          PYTHON_BIN="./python-musl/bin/python"
-          if [ ! -f "$PYTHON_BIN" ]; then
-            echo "错误：未找到Python可执行文件"
-            exit 1
-          fi
-          
+          echo "Python文件路径：$PYTHON_BIN"
           echo "Python文件类型检测结果："
           file "$PYTHON_BIN"
           
@@ -72,7 +78,13 @@ jobs:
             exit 1
           fi
           
-          echo "✅ 确认是静态链接Python，版本：$($PYTHON_BIN --version)"
+          # 记录Python路径和site-packages路径（供后续使用）
+          echo "PYTHON_BIN=$PYTHON_BIN" >> $GITHUB_ENV
+          # 提取site-packages路径（bin的同级目录下的lib/python3.10/site-packages）
+          PYTHON_LIB=$(dirname "$PYTHON_BIN")/../lib/python3.10/site-packages
+          echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
+          
+          echo "✅ 确认是静态链接Python，版本：$("$PYTHON_BIN" --version)"
 
       - name: 编译静态libaio
         run: |
@@ -96,8 +108,15 @@ jobs:
 
       - name: 安装Python依赖
         run: |
-          ./python-musl/bin/python -m pip install --upgrade pip
-          ./python-musl/bin/python -m pip install \
+          # 使用环境变量中的Python路径
+          PYTHON_BIN="${{ env.PYTHON_BIN }}"
+          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
+            echo "错误：Python路径无效"
+            exit 1
+          fi
+          
+          $PYTHON_BIN -m pip install --upgrade pip
+          $PYTHON_BIN -m pip install \
             dmPython==2.5.22 \
             pandas==2.1.4 \
             flask==2.3.3 \
@@ -105,7 +124,7 @@ jobs:
             pyinstaller==6.16.0 \
             --no-cache-dir
           
-          if ! ./python-musl/bin/python -c "import dmPython" &> /dev/null; then
+          if ! $PYTHON_BIN -c "import dmPython" &> /dev/null; then
             echo "错误：dmPython导入失败"
             exit 1
           fi
@@ -118,9 +137,19 @@ jobs:
             exit 1
           fi
           
+          PYTHON_BIN="${{ env.PYTHON_BIN }}"
+          PYTHON_LIB="${{ env.PYTHON_LIB }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
-          ./python-musl/bin/pyinstaller --onefile --name myapp-linux \
-            --paths=./python-musl/lib/python3.10/site-packages \
+          
+          # 验证路径有效性
+          if [ -z "$PYTHON_BIN" ] || [ -z "$PYTHON_LIB" ] || [ -z "$LIB_AIO_PATH" ]; then
+            echo "错误：环境变量路径缺失"
+            exit 1
+          fi
+          
+          # 使用动态获取的Python路径和依赖路径
+          $PYTHON_BIN -m PyInstaller --onefile --name myapp-linux \
+            --paths="$PYTHON_LIB" \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
