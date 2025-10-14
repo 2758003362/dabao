@@ -3,92 +3,96 @@ name: 达梦API服务打包（兼容GLIBC 2.31）
 on:
   push:
     tags:
-      - 'v*.*.*'  # 推送标签（如v1.0.24）时触发构建
-  workflow_dispatch:  # 允许手动触发，方便测试
+      - 'v*.*.*'  # 推送标签（如v1.0.25）时触发构建
+  workflow_dispatch:  # 允许手动触发，方便测试与调试
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest  # 使用最新版Ubuntu，避免排队
+    runs-on: ubuntu-latest  # 使用最新版Ubuntu，减少排队时间
     steps:
       # 步骤1：检出仓库代码
       - name: 检出仓库代码
-        uses: actions/checkout@v4  # 拉取当前仓库的最新代码
+        uses: actions/checkout@v4  # 拉取当前仓库最新代码
 
-      # 步骤2：下载并配置静态Python（兼容GLIBC 2.31）
-      - name: 配置静态Python环境
+      # 步骤2：配置静态Python环境（兼容GLIBC 2.31）
+      - name: 下载并解压静态Python
         run: |
-          # 下载独立于系统的Python（不依赖系统GLIBC版本）
+          # 下载独立Python压缩包（不依赖系统GLIBC版本）
           wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          # 验证Python压缩包是否下载成功
+          # 验证压缩包是否下载成功
           if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
-            echo "错误：Python压缩包下载失败，请检查网络或链接"
+            echo "错误：Python压缩包下载失败，请检查网络"
             exit 1
           fi
           
-          # 创建Python目录并解压（避免路径混乱）
+          # 创建Python目录并解压（--strip-components=1移除顶层目录）
           mkdir -p python
           tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
-          # 验证Python是否可用（检查版本）
+          # 验证Python环境是否可用
           if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败，未找到可执行文件"
             exit 1
           fi
           ./python/bin/python --version  # 输出Python版本，确认环境正常
 
-      # 步骤3：手动安装libaio1（dmPython必需的系统依赖）
-      - name: 手动安装libaio1依赖
+      # 步骤3：可靠安装libaio1（dmPython必需依赖，解决404错误）
+      - name: 安装libaio1系统依赖
         run: |
-          # 从Ubuntu官方归档源下载libaio1的deb包（x86_64架构，适配大多数Linux）
-          wget http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb
+          # 1. 更新软件源列表（关键：获取最新包路径，避免404）
+          sudo apt-get update -y
           
-          # 用dpkg命令手动安装deb包（无需依赖系统软件源）
-          sudo dpkg -i libaio1_0.3.113-4_amd64.deb
+          # 2. 安装libaio1（指定稳定版本，避免依赖冲突）
+          sudo apt-get install -y libaio1=0.3.113-5
           
-          # 修复可能的依赖缺失（若dpkg安装失败，自动补充依赖）
-          sudo apt-get -f install -y  # -f：fix broken，自动修复依赖问题
+          # 3. 验证安装结果（确保依赖确实安装成功）
+          if ! dpkg -l | grep -q "libaio1"; then
+            echo "错误：libaio1安装失败，无法继续打包"
+            exit 1
+          fi
+          echo "✅ libaio1安装成功"
 
-      # 步骤4：安装Python依赖（含dmPython、pandas、Flask等）
-      - name: 安装Python项目依赖
+      # 步骤4：安装Python项目依赖（含达梦驱动、Flask等）
+      - name: 安装Python依赖包
         run: |
-          # 升级pip到最新版，避免依赖安装错误
+          # 升级pip到最新版，减少依赖安装错误
           ./python/bin/python -m pip install --upgrade pip
           
-          # 安装所有项目依赖（指定dmPython版本为2.5.1，稳定兼容）
+          # 安装指定版本的依赖（确保稳定性与兼容性）
           ./python/bin/python -m pip install \
-            dmPython==2.5.1 \
-            pandas==2.1.4 \
-            flask==2.3.3 \
-            werkzeug==2.3.7 \
-            pyinstaller==6.16.0
+            dmPython==2.5.1 \          # 达梦数据库Python驱动
+            pandas==2.1.4 \           # 数据处理库
+            flask==2.3.3 \             # Web框架
+            werkzeug==2.3.7 \          # Flask依赖的WSGI工具
+            pyinstaller==6.16.0        # 打包工具
 
       # 步骤5：用PyInstaller打包成单文件可执行程序
-      - name: 打包Linux可执行程序
+      - name: 打包Linux可执行文件
         run: |
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \  # 指定依赖包路径
-            --hidden-import=flask \                        # 强制包含Flask
+            --hidden-import=flask \                        # 强制包含Flask核心模块
             --hidden-import=dmPython \                     # 强制包含达梦驱动
+            --hidden-import=dmPython.dbapi2 \              # dmPython隐藏依赖（避免运行时缺失）
             --hidden-import=pandas \                       # 强制包含pandas
-            --hidden-import=pandas.core \                  # pandas核心模块
-            --hidden-import=pandas.io \                    # pandas IO模块
-            --hidden-import=dmPython.dbapi2 \              # dmPython隐藏依赖
-            main.py  # 入口文件（你的Flask服务主程序）
+            --hidden-import=pandas.core \                  # pandas核心子模块
+            --hidden-import=pandas.io \                    # pandas IO子模块（处理数据读写）
+            main.py  # 项目入口文件（Flask服务主程序）
 
-      # 步骤6：上传打包产物到GitHub Artifacts（便于下载）
+      # 步骤6：上传打包产物到GitHub（便于下载）
       - name: 保存打包产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-static  # 产物名称（下载时可见）
+          name: myapp-static  # 产物名称（下载时显示）
           path: dist/myapp-linux  # 产物路径（PyInstaller默认输出到dist目录）
-          retention-days: 7  # 产物保留7天（可根据需求调整）
+          retention-days: 7  # 产物保留7天（可按需调整）
 
-  # 步骤7：创建GitHub Release（仅标签触发时执行）
+  # 步骤7：创建GitHub Release（仅标签触发时执行，便于分发）
   release:
-    needs: build-linux  # 依赖build-linux任务完成后才执行
+    needs: build-linux  # 依赖build-linux任务成功后才执行
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')  # 仅当推送标签时执行
+    if: startsWith(github.ref, 'refs/tags/')  # 仅推送标签时触发
     steps:
       - name: 下载打包产物
         uses: actions/download-artifact@v4
@@ -98,7 +102,7 @@ jobs:
       - name: 创建GitHub Release并上传产物
         uses: softprops/action-gh-release@v2
         with:
-          files: myapp-linux  # 要上传到Release的文件
+          files: myapp-linux  # 上传到Release的文件
           generate_release_notes: true  # 自动生成Release说明（含提交记录）
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub自动提供的令牌，无需修改
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub自动提供的令牌（无需手动配置）
