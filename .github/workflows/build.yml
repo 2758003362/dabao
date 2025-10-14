@@ -13,7 +13,7 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装基础工具（含tree和findutils）
+      - name: 安装基础工具
         run: |
           sudo apt-get update -y
           sudo apt-get install -y musl-tools tree findutils
@@ -25,9 +25,9 @@ jobs:
           done
           echo "✅ 基础工具安装完成"
 
-      - name: 配置静态Python（优化查找逻辑）
+      - name: 配置静态Python（适配python3命名）
         run: |
-          # 使用确认存在的Python版本
+          # 确认存在的Python版本
           PYTHON_TAR="cpython-3.10.12+20230726-x86_64-unknown-linux-musl-install_only.tar.gz"
           PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20230726/$PYTHON_TAR"
           EXPECTED_SHA256="9080014bee2d4bd1f96bcbebf447d40c35ae9354382246add1160bd0d433ebf7"
@@ -58,23 +58,29 @@ jobs:
             exit 1
           fi
           
-          # 优化Python查找规则
-          echo "=== 查找Python可执行文件 ==="
-          ALL_PYTHON_FILES=$(find python-musl -name "python" -type f | sort)
+          # 关键修复：扩展查找规则，适配python3命名
+          echo "=== 查找Python可执行文件（适配python3命名） ==="
+          # 1. 查找所有以python开头的文件（python、python3、python3.10等）
+          ALL_PYTHON_FILES=$(find python-musl -name "python*" -type f | sort)
           if [ -n "$ALL_PYTHON_FILES" ]; then
-            echo "找到的'python'文件列表："
+            echo "找到的Python相关文件列表："
             echo "$ALL_PYTHON_FILES"
           fi
           
-          # 优先选择bin目录下的Python
-          PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python$" | head -n 1)
-          # 容错机制：选择第一个找到的文件
+          # 2. 优先选择bin目录下的python3或python（标准命名）
+          PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python3\(\.[0-9]\+\)\?$" | head -n 1)
+          # 若未找到python3，尝试找bin目录下的python
           if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            echo "警告：未找到bin目录下的Python，尝试选择第一个可执行文件"
+            PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python$" | head -n 1)
+          fi
+          
+          # 3. 容错机制：选择第一个可执行的Python文件
+          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
+            echo "警告：未找到标准路径的Python，尝试选择第一个可执行文件"
             PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | head -n 1)
           fi
           
-          # 最终验证
+          # 4. 最终验证
           if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
             echo "错误：未找到Python可执行文件"
             echo "解压后的完整目录结构："
@@ -89,9 +95,18 @@ jobs:
             exit 1
           fi
           
+          # 验证是否能正常运行（关键检查）
+          echo "验证Python可执行性..."
+          if ! "$PYTHON_BIN" --version &> /dev/null; then
+            echo "错误：$PYTHON_BIN无法执行（不是有效的Python解释器）"
+            "$PYTHON_BIN" --version  # 打印错误信息
+            exit 1
+          fi
+          
           # 验证静态链接
           echo "=== Python文件信息 ==="
           echo "路径：$PYTHON_BIN"
+          echo "版本：$("$PYTHON_BIN" --version 2>&1)"
           echo "类型：$(file "$PYTHON_BIN" | awk -F ',' '{print $1}')"
           
           if ! file "$PYTHON_BIN" | grep -q "statically linked"; then
@@ -109,7 +124,7 @@ jobs:
           fi
           echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
           
-          echo "✅ 静态Python配置完成，版本：$("$PYTHON_BIN" --version)"
+          echo "✅ 静态Python配置完成"
 
       - name: 编译静态libaio
         run: |
