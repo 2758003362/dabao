@@ -3,192 +3,181 @@ name: 达梦API服务打包（兼容GLIBC 2.31）
 on:
   push:
     tags:
-      - 'v*.*.*'  # 推送标签触发构建
-  workflow_dispatch:  # 允许手动触发，方便测试
+      - 'v*.*.*'
+  workflow_dispatch:
 
 jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      # 步骤1：检出仓库代码
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      # 步骤2：配置静态Python环境（兼容GLIBC 2.31）
-      - name: 下载并解压静态Python
+      - name: 配置静态Python环境（兼容GLIBC 2.31）
         run: |
-          # 下载长期稳定的静态Python压缩包
           wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          # 验证Python压缩包是否存在
           if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
-          # 解压到python目录
           mkdir -p python
           tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
-          # 验证Python可用性
           if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败"
             exit 1
           fi
-          echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
+          ./python/bin/python --version
 
-      # 步骤3：安装解压工具（binutils含ar，zstd处理.zst压缩）
-      - name: 安装必要工具
+      - name: 安装解压工具（binutils含ar，zstd处理压缩）
         run: |
           sudo apt-get update -y
-          # 安装binutils（含ar工具）和zstd（处理.zst压缩）
           sudo apt-get install -y binutils zstd
+          echo "✅ 工具安装完成：ar版本=$(ar --version | head -1)，zstd版本=$(zstd --version | head -1)"
+
+      - name: 多源多版本下载libaio1（确保找到有效包）
+        run: |
+          # 定义备选源和版本（均包含libaio.so.1.0.1，按优先级排序）
+          declare -a SOURCES=(
+            "http://ftp.de.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.112-3_amd64.deb"  # Debian源（高优先级）
+            "http://ftp.us.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.112-1_amd64.deb"
+            "http://ftp.tw.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.111-1_amd64.deb"
+            "https://debian.mirror.ac.za/debian/pool/main/liba/libaio/libaio1_0.3.112-3_amd64.deb"
+          )
           
-          # 验证工具安装成功
-          if ! command -v ar &> /dev/null || ! command -v zstd &> /dev/null; then
-            echo "错误：ar或zstd工具安装失败"
+          # 对应的文件大小（用于校验下载完整性）
+          declare -A EXPECTED_SIZES=(
+            ["0.3.112-3"]=6508
+            ["0.3.112-1"]=6496
+            ["0.3.111-1"]=6484
+          )
+          
+          # 循环尝试所有源，直到下载成功
+          for url in "${SOURCES[@]}"; do
+            filename=$(basename "$url")
+            version=$(echo "$filename" | grep -oP '0\.3\.\d+-\d+')  # 提取版本号
+            
+            echo "尝试下载：$url（版本：$version）"
+            if wget -O "$filename" "$url"; then
+              # 验证文件大小
+              actual_size=$(stat -c "%s" "$filename")
+              expected_size=${EXPECTED_SIZES[$version]}
+              
+              if [ "$actual_size" -eq "$expected_size" ]; then
+                echo "✅ 下载成功并校验通过：$filename（大小：$actual_size字节）"
+                DEB_FILE="$filename"
+                break
+              else
+                echo "文件大小不匹配，预期：$expected_size，实际：$actual_size，跳过该文件"
+                rm "$filename"
+              fi
+            else
+              echo "下载失败，尝试下一个源..."
+            fi
+          done
+          
+          # 检查是否成功获取deb包
+          if [ -z "$DEB_FILE" ]; then
+            echo "错误：所有源均下载失败"
             exit 1
           fi
-          echo "✅ 工具安装完成：ar=$(ar --version | head -1 | awk '{print $4}')，zstd=$(zstd --version | head -1 | awk '{print $2}')"
 
-      # 步骤4：强制下载有效版本的libaio1 deb包（0.3.112-3，确认含libaio.so.1.0.1）
-      - name: 下载并校验libaio1 deb包
+      - name: 解压deb包并查找libaio.so.1.0.1
         run: |
-          # 固定使用0.3.112-3版本（经验证包含目标文件，大小6508字节）
-          LIB_AIO_URL="http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.112-3_amd64.deb"
-          DEB_FILE="libaio1_0.3.112-3_amd64.deb"
-          
-          # 下载deb包（指定输出文件名，避免版本混淆）
-          wget -O "$DEB_FILE" "$LIB_AIO_URL" || {
-            echo "错误：deb包下载失败，URL=$LIB_AIO_URL"
-            exit 1
-          }
-          
-          # 校验deb包大小（0.3.112-3版本固定大小为6508字节，确保未下载错误版本）
-          ACTUAL_SIZE=$(stat -c "%s" "$DEB_FILE")
-          EXPECTED_SIZE=6508
-          if [ "$ACTUAL_SIZE" -ne "$EXPECTED_SIZE" ]; then
-            echo "错误：deb包大小异常，实际=$ACTUAL_SIZE字节，预期=$EXPECTED_SIZE字节"
-            exit 1
-          fi
-          echo "✅ deb包下载并校验成功：$DEB_FILE（大小=$ACTUAL_SIZE字节）"
-
-      # 步骤5：解压deb包并动态查找libaio.so.1.0.1（含详细日志）
-      - name: 解压并查找libaio.so.1.0.1
-        run: |
-          DEB_FILE="libaio1_0.3.112-3_amd64.deb"
-          TEMP_DIR="temp_lib"  # 临时目录，避免污染系统
+          TEMP_DIR="temp_lib"
           mkdir -p "$TEMP_DIR"
           
-          # 1. 提取deb包所有内容到临时目录
-          echo "正在提取deb包内容到$TEMP_DIR..."
+          # 提取deb包内容
           ar x "$DEB_FILE" --output="$TEMP_DIR"
           
-          # 2. 查找data.tar.*数据文件（处理所有压缩格式）
+          # 查找数据文件
           DATA_TAR=$(find "$TEMP_DIR" -name "data.tar.*")
           if [ -z "$DATA_TAR" ]; then
-            echo "错误：未找到data.tar文件，deb包内容如下："
-            ls -la "$TEMP_DIR"  # 打印所有内容，方便排查
+            echo "错误：未找到data.tar文件"
+            ls -la "$TEMP_DIR"
             exit 1
           fi
-          echo "✅ 找到数据文件：$DATA_TAR"
+          echo "找到数据文件：$DATA_TAR"
           
-          # 3. 解压数据文件（根据后缀自动选择解压方式）
-          echo "正在解压数据文件：$DATA_TAR"
+          # 解压数据文件
           if [[ "$DATA_TAR" == *.gz ]]; then
             tar -xzf "$DATA_TAR" -C "$TEMP_DIR"
           elif [[ "$DATA_TAR" == *.xz ]]; then
             tar -xf "$DATA_TAR" -C "$TEMP_DIR"
           elif [[ "$DATA_TAR" == *.zst ]]; then
-            tar -I zstd -xf "$DATA_TAR" -C "$TEMP_DIR"  # 处理.zst格式
+            tar -I zstd -xf "$DATA_TAR" -C "$TEMP_DIR"
           else
-            echo "错误：不支持的压缩格式：$DATA_TAR"
+            echo "错误：不支持的格式"
             exit 1
           fi
           
-          # 4. 查找目标文件libaio.so.1.0.1（显示所有匹配结果）
-          echo "正在查找libaio.so.1.0.1..."
+          # 查找目标文件
           LIB_PATH=$(find "$TEMP_DIR" -name "libaio.so.1.0.1" 2>/dev/null)
           if [ -z "$LIB_PATH" ]; then
-            echo "错误：未找到libaio.so.1.0.1，临时目录所有文件如下："
-            ls -R "$TEMP_DIR"  # 打印完整目录结构，定位问题
+            echo "错误：未找到libaio.so.1.0.1，文件列表："
+            ls -R "$TEMP_DIR"
             exit 1
           fi
-          echo "✅ 找到libaio.so.1.0.1，路径：$LIB_PATH"
+          echo "找到目标文件：$LIB_PATH"
           
-          # 5. 部署到系统库目录（让dmPython能识别）
-          SELECTED_LIB=$(echo "$LIB_PATH" | head -n 1)  # 选择第一个匹配路径
-          sudo cp "$SELECTED_LIB" /usr/lib/x86_64-linux-gnu/
+          # 部署到系统目录
+          sudo cp "$LIB_PATH" /usr/lib/x86_64-linux-gnu/
           sudo ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/libaio.so.1
+          sudo ldconfig
           
-          # 6. 验证部署结果
-          sudo ldconfig  # 更新系统库缓存
+          # 验证
           if ! ldconfig -p | grep -q "libaio.so.1"; then
-            echo "错误：libaio.so.1部署失败"
+            echo "错误：部署失败"
             exit 1
           fi
-          echo "✅ libaio.so.1部署成功，当前状态：$(ldconfig -p | grep "libaio.so.1")"
+          echo "✅ libaio部署成功"
 
-      # 步骤6：安装Python依赖（含dmPython、Flask等）
-      - name: 安装Python项目依赖
+      - name: 安装Python依赖
         run: |
-          # 升级pip到最新版，减少依赖安装错误
           ./python/bin/python -m pip install --upgrade pip
-          
-          # 安装指定版本的依赖（确保稳定性）
           ./python/bin/python -m pip install \
-            dmPython==2.5.1 \          # 达梦数据库驱动
-            pandas==2.1.4 \           # 数据处理库
-            flask==2.3.3 \             # Web框架
-            werkzeug==2.3.7 \          # Flask依赖的WSGI工具
-            pyinstaller==6.16.0        # 打包工具
-          
-          echo "✅ Python依赖安装完成"
+            dmPython==2.5.1 \
+            pandas==2.1.4 \
+            flask==2.3.3 \
+            werkzeug==2.3.7 \
+            pyinstaller==6.16.0
 
-      # 步骤7：打包Linux可执行程序（携带libaio.so.1，避免运行时依赖）
-      - name: 打包应用程序
+      - name: 打包应用
         run: |
           ./python/bin/pyinstaller --onefile --name myapp-linux \
-            --paths=./python/lib/python3.11/site-packages \  # 指定依赖路径
-            --hidden-import=flask \                        # 强制包含Flask
-            --hidden-import=dmPython \                     # 强制包含达梦驱动
-            --hidden-import=dmPython.dbapi2 \              # dmPython隐藏依赖
-            --hidden-import=pandas \                       # 强制包含pandas
-            --hidden-import=pandas.core \                  # pandas核心模块
-            --hidden-import=pandas.io \                    # pandas IO模块
-            --add-binary="/usr/lib/x86_64-linux-gnu/libaio.so.1:." \  # 携带libaio库
-            main.py  # 项目入口文件
-          
-          # 验证打包产物
-          if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：打包失败，未生成产物"
-            exit 1
-          fi
-          echo "✅ 打包完成，产物路径：dist/myapp-linux（大小：$(du -sh dist/myapp-linux | awk '{print $1}')）"
+            --paths=./python/lib/python3.11/site-packages \
+            --hidden-import=flask \
+            --hidden-import=dmPython \
+            --hidden-import=dmPython.dbapi2 \
+            --hidden-import=pandas \
+            --hidden-import=pandas.core \
+            --hidden-import=pandas.io \
+            --add-binary="/usr/lib/x86_64-linux-gnu/libaio.so.1:." \
+            main.py
 
-      # 步骤8：上传打包产物到GitHub Artifacts
-      - name: 保存打包产物
+      - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
           name: myapp-static
           path: dist/myapp-linux
-          retention-days: 7  # 产物保留7天，可按需调整
+          retention-days: 7
 
-  # 步骤9：创建GitHub Release（仅标签触发时执行）
   release:
-    needs: build-linux  # 依赖build-linux任务成功后执行
+    needs: build-linux
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: 下载打包产物
+      - name: 下载产物
         uses: actions/download-artifact@v4
         with:
           name: myapp-static
 
-      - name: 创建GitHub Release并上传产物
+      - name: 创建Release
         uses: softprops/action-gh-release@v2
         with:
-          files: myapp-linux  # 上传打包后的可执行文件
-          generate_release_notes: true  # 自动生成Release说明（含提交记录）
+          files: myapp-linux
+          generate_release_notes: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub自动提供的令牌
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
