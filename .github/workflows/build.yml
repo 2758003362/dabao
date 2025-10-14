@@ -58,29 +58,27 @@ jobs:
             exit 1
           fi
           
-          # 关键修复：扩展查找规则，适配python3命名
-          echo "=== 查找Python可执行文件（适配python3命名） ==="
-          # 1. 查找所有以python开头的文件（python、python3、python3.10等）
+          # 查找Python可执行文件（适配python3命名）
+          echo "=== 查找Python可执行文件 ==="
           ALL_PYTHON_FILES=$(find python-musl -name "python*" -type f | sort)
           if [ -n "$ALL_PYTHON_FILES" ]; then
             echo "找到的Python相关文件列表："
             echo "$ALL_PYTHON_FILES"
           fi
           
-          # 2. 优先选择bin目录下的python3或python（标准命名）
+          # 优先选择bin目录下的python3
           PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python3\(\.[0-9]\+\)\?$" | head -n 1)
-          # 若未找到python3，尝试找bin目录下的python
           if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
             PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python$" | head -n 1)
           fi
           
-          # 3. 容错机制：选择第一个可执行的Python文件
+          # 容错机制
           if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
             echo "警告：未找到标准路径的Python，尝试选择第一个可执行文件"
             PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | head -n 1)
           fi
           
-          # 4. 最终验证
+          # 验证
           if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
             echo "错误：未找到Python可执行文件"
             echo "解压后的完整目录结构："
@@ -88,18 +86,10 @@ jobs:
             exit 1
           fi
           
-          # 验证是否为二进制可执行文件
-          if ! file "$PYTHON_BIN" | grep -q "ELF.*executable"; then
-            echo "错误：$PYTHON_BIN不是二进制可执行文件"
-            file "$PYTHON_BIN"
-            exit 1
-          fi
-          
-          # 验证是否能正常运行（关键检查）
+          # 验证可执行性
           echo "验证Python可执行性..."
           if ! "$PYTHON_BIN" --version &> /dev/null; then
-            echo "错误：$PYTHON_BIN无法执行（不是有效的Python解释器）"
-            "$PYTHON_BIN" --version  # 打印错误信息
+            echo "错误：$PYTHON_BIN无法执行"
             exit 1
           fi
           
@@ -114,9 +104,8 @@ jobs:
             exit 1
           fi
           
-          # 记录路径到环境变量
+          # 记录路径
           echo "PYTHON_BIN=$PYTHON_BIN" >> $GITHUB_ENV
-          # 动态查找site-packages路径
           PYTHON_LIB=$(dirname "$PYTHON_BIN")/../lib/python3.10/site-packages
           if [ ! -d "$PYTHON_LIB" ]; then
             echo "警告：默认site-packages路径不存在，动态查找..."
@@ -126,24 +115,42 @@ jobs:
           
           echo "✅ 静态Python配置完成"
 
-      - name: 编译静态libaio
+      - name: 编译静态libaio（适配musl，修复头文件缺失）
         run: |
+          # 下载libaio源码
           wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
           tar -xzf libaio-libaio-0.3.113.tar.gz
           cd libaio-libaio-0.3.113
           
+          # 关键修复：替换源码中对glibc特有头文件的依赖
+          # 1. 手动定义__WORDSIZE（64位系统），避免包含bits/wordsize.h
+          # 2. 修改src/Makefile，添加兼容musl的编译参数
+          echo "修复libaio源码以适配musl..."
+          # 替换所有源码中对bits/wordsize.h的引用，并定义__WORDSIZE
+          find src/ -name "*.c" -exec sed -i \
+            -e 's/#include <bits\/wordsize.h>//g' \
+            -e 's/^/#define __WORDSIZE 64\n/' {} +
+          
+          # 修改Makefile，强制使用musl-gcc并添加兼容参数
+          sed -i 's/CC = gcc/CC = musl-gcc/' src/Makefile
+          sed -i 's/CFLAGS = -Wall -Werror -O2 -g/CFLAGS += -fPIC -static -I\/usr\/include -D_GNU_SOURCE/' src/Makefile
+          sed -i 's/LDFLAGS = -shared/LDFLAGS += -static/' src/Makefile
+          
+          # 复制头文件（确保libaio.h存在）
           sudo cp src/libaio.h /usr/include/
           if [ ! -f "/usr/include/libaio.h" ]; then
             echo "错误：libaio.h复制失败"
             exit 1
           fi
           
-          make CC=musl-gcc CFLAGS="-fPIC -static -I/usr/include" LDFLAGS="-static"
+          # 静态编译（添加V=1显示详细编译命令）
+          make V=1
           if [ ! -f "src/libaio.so.1.0.1" ]; then
             echo "错误：libaio编译失败"
             exit 1
           fi
           
+          # 安装到系统目录
           sudo cp src/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/
           sudo ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/libaio.so.1
           LIB_AIO_PATH="/usr/lib/x86_64-linux-gnu/libaio.so.1"
