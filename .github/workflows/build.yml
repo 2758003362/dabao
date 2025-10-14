@@ -3,44 +3,44 @@ name: 达梦API服务打包（兼容GLIBC 2.31 + Ubuntu 24.04）
 on:
   push:
     tags:
-      - 'v*.*.*'  # 推送标签（如v1.0.40）时自动触发构建
-  workflow_dispatch:  # 允许在GitHub界面手动触发，方便测试
+      - 'v*.*.*'  # 推送标签（如v1.0.41）触发构建
+  workflow_dispatch:  # 允许手动触发，方便测试
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest  # 使用Ubuntu 24.04环境（latest对应版本）
+    runs-on: ubuntu-latest  # 使用Ubuntu 24.04环境
     steps:
       # 步骤1：检出仓库代码
       - name: 检出仓库代码
-        uses: actions/checkout@v4  # 拉取当前仓库的最新代码
+        uses: actions/checkout@v4
 
-      # 步骤2：配置静态Python环境（兼容低版本GLIBC，避免系统依赖问题）
+      # 步骤2：配置静态Python环境（兼容低版本GLIBC）
       - name: 下载并配置静态Python
         run: |
-          # 下载独立于系统的静态Python（不依赖系统GLIBC版本，兼容性强）
+          # 下载独立静态Python（不依赖系统GLIBC）
           wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          # 验证Python压缩包是否下载成功
+          # 验证下载
           if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
-            echo "错误：Python压缩包下载失败，请检查网络连接"
+            echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
-          # 解压Python到指定目录（--strip-components=1移除顶层目录，简化路径）
+          # 解压Python
           mkdir -p python
           tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
-          # 验证Python是否可用（检查版本）
+          # 验证Python可用性
           if [ ! -f "./python/bin/python" ]; then
-            echo "错误：Python解压失败，未找到可执行文件"
+            echo "错误：Python解压失败"
             exit 1
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
 
-      # 步骤3：手动下载并安装libaio1（解决Ubuntu 24.04源缺失问题）
-      - name: 手动安装libaio1（dmPython依赖）
+      # 步骤3：手动安装libaio1（解决Ubuntu 24.04源缺失问题）
+      - name: 手动下载并安装libaio1
         run: |
-          # 多源备选：确保至少一个源能下载成功（覆盖官方源、阿里云、网易等）
+          # 多源备选，确保下载成功
           LIB_AIO_URLS=(
             "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
@@ -48,115 +48,97 @@ jobs:
             "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
           )
           
-          # 循环尝试下载，直到成功或所有源失败
+          # 循环尝试下载
           for url in "${LIB_AIO_URLS[@]}"; do
-            echo "正在从 $url 下载libaio1.deb..."
-            # 使用wget静默下载，避免日志冗余
+            echo "从 $url 下载libaio1..."
             if wget -q "$url" -O libaio1.deb; then
-              echo "✅ libaio1.deb下载成功"
+              echo "✅ 下载成功"
               break
             fi
           done
           
-          # 检查下载结果：若所有源失败，终止构建
+          # 检查下载结果
           if [ ! -f "libaio1.deb" ]; then
-            echo "错误：所有源均无法下载libaio1.deb，请检查网络或源地址"
+            echo "错误：所有源均下载失败"
             exit 1
           fi
           
-          # 强制安装deb包（--force-depends忽略版本依赖检查，适配Ubuntu 24.04）
+          # 强制安装deb包（适配Ubuntu 24.04）
           sudo dpkg -i --force-depends libaio1.deb
           
-          # 验证libaio1是否安装成功
+          # 验证安装
           if ! dpkg -s libaio1 &> /dev/null; then
-            echo "错误：libaio1安装失败，dpkg状态异常"
+            echo "错误：libaio1安装失败"
             exit 1
           fi
-          
-          # 确认libaio.so.1存在（dmPython实际依赖的库文件）
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | awk '{print $4}')
-          if [ -z "$LIB_AIO_PATH" ]; then
-            echo "错误：安装后未找到libaio.so.1，依赖无效"
-            exit 1
-          fi
-          echo "✅ libaio1安装完成，库文件路径：$LIB_AIO_PATH"
+          echo "✅ libaio1安装成功，路径：$LIB_AIO_PATH"
 
-      # 步骤4：安装Python依赖（修复dmPython版本，使用PyPI存在的2.5.22）
+      # 步骤4：安装Python依赖（修复pip命令格式，无空依赖）
       - name: 安装Python项目依赖
         run: |
-          # 升级pip到最新版，减少依赖安装错误（如版本解析问题）
+          # 升级pip到最新版
           ./python/bin/python -m pip install --upgrade pip
           
-          # 关键修复：dmPython==2.5.22（PyPI存在的最新稳定版，兼容达梦数据库）
-          # 其他依赖版本保持不变，确保整体兼容性
-          ./python/bin/python -m pip install \
-            dmPython==2.5.22 \          # 达梦数据库Python驱动（替换原2.5.1，解决版本不存在问题）
-            pandas==2.1.4 \           # 数据处理库（存储过程结果格式化）
-            flask==2.3.3 \             # Web框架（提供API服务）
-            werkzeug==2.3.7 \          # Flask依赖的WSGI工具（避免版本冲突）
-            pyinstaller==6.16.0        # 打包工具（生成单文件可执行程序）
+          # 关键：所有依赖写在一行，用空格分隔，避免解析空依赖
+          ./python/bin/python -m pip install dmPython==2.5.22 pandas==2.1.4 flask==2.3.3 werkzeug==2.3.7 pyinstaller==6.16.0
           
-          # 验证dmPython是否成功安装并可导入（避免隐性错误）
-          if ! ./python/bin/python -c "import dmPython; print('dmPython版本：', dmPython.__version__)" &> /dev/null; then
-            echo "错误：dmPython安装成功但无法导入，请检查libaio依赖是否正常"
+          # 验证dmPython安装（避免隐性错误）
+          if ! ./python/bin/python -c "import dmPython" &> /dev/null; then
+            echo "错误：dmPython安装成功但无法导入"
             exit 1
           fi
-          
-          # 打印dmPython版本，确认安装结果
           DM_VERSION=$(./python/bin/python -c "import dmPython; print(dmPython.__version__)")
           echo "✅ Python依赖安装完成，dmPython版本：$DM_VERSION"
 
-      # 步骤5：打包Linux可执行程序（携带libaio.so.1，避免运行时依赖缺失）
+      # 步骤5：打包Linux可执行程序（携带libaio.so.1）
       - name: 用PyInstaller打包应用
         run: |
-          # 获取libaio.so.1的实际路径（用于打包时携带）
+          # 获取libaio.so.1路径
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | awk '{print $4}')
           
-          # 打包命令：强制包含所有依赖，避免运行时缺失模块
+          # 打包命令（强制包含所有依赖）
           ./python/bin/pyinstaller --onefile --name myapp-linux \
-            --paths=./python/lib/python3.11/site-packages \  # 指定Python依赖包路径
-            --hidden-import=flask \                        # 强制包含Flask核心模块（易被PyInstaller遗漏）
-            --hidden-import=dmPython \                     # 强制包含达梦驱动
-            --hidden-import=dmPython.dbapi2 \              # dmPython隐藏依赖（驱动核心逻辑）
-            --hidden-import=pandas \                       # 强制包含pandas（数据处理）
-            --hidden-import=pandas.core \                  # pandas核心子模块（避免序列化错误）
-            --hidden-import=pandas.io \                    # pandas IO子模块（处理数据读写）
-            --add-binary="$LIB_AIO_PATH:." \               # 携带libaio.so.1到打包产物中
-            main.py  # 项目入口文件（Flask服务主程序）
+            --paths=./python/lib/python3.11/site-packages \
+            --hidden-import=flask \
+            --hidden-import=dmPython \
+            --hidden-import=dmPython.dbapi2 \
+            --hidden-import=pandas \
+            --hidden-import=pandas.core \
+            --hidden-import=pandas.io \
+            --add-binary="$LIB_AIO_PATH:." \
+            main.py
           
-          # 验证打包产物是否生成
+          # 验证打包产物
           if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：PyInstaller打包失败，未在dist目录生成myapp-linux"
+            echo "错误：打包失败"
             exit 1
           fi
-          
-          # 打印产物信息（大小、权限），便于后续验证
-          echo "✅ 应用打包完成，产物信息："
-          ls -lh dist/myapp-linux
+          echo "✅ 打包完成，产物路径：dist/myapp-linux"
 
-      # 步骤6：上传打包产物到GitHub Artifacts（便于下载和测试）
-      - name: 保存打包产物
+      # 步骤6：保存打包产物
+      - name: 上传打包产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-static  # 产物名称（在GitHub Actions界面显示）
-          path: dist/myapp-linux  # 产物路径（PyInstaller默认输出目录）
-          retention-days: 7  # 产物保留7天（可按需调整，如30天）
+          name: myapp-static
+          path: dist/myapp-linux
+          retention-days: 7  # 产物保留7天
 
-  # 步骤7：创建GitHub Release（仅推送标签时执行，便于版本分发）
+  # 步骤7：创建GitHub Release（仅标签触发）
   release:
-    needs: build-linux  # 依赖build-linux任务成功后才执行
+    needs: build-linux
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')  # 仅当推送标签（如v1.0.40）时触发
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: 下载打包产物
+      - name: 下载产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-static  # 对应步骤6的产物名称
+          name: myapp-static
 
-      - name: 创建GitHub Release并上传产物
+      - name: 创建Release并上传产物
         uses: softprops/action-gh-release@v2
         with:
-          files: myapp-linux  # 上传到Release的可执行文件
-          generate_release_notes: true  # 自动生成Release说明（包含近期提交记录）
+          files: myapp-linux
+          generate_release_notes: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub自动提供的令牌，无需手动配置
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

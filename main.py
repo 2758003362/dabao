@@ -79,8 +79,8 @@ def get_users():
     json_response = json.dumps(
         db_data,
         default=convert_datetime,  # 处理datetime字段
-        ensure_ascii=False,  # 中文不转义（如“张三”不会变成“\u5f20\u4e09”）
-        indent=4  # 格式化输出，便于调试查看
+        ensure_ascii=False,  # 中文不转义
+        indent=4  # 格式化输出，便于调试
     )
     return json_response
 
@@ -88,12 +88,10 @@ def get_users():
 # 🔗 API接口2：获取单个模拟用户（示例功能，可按需删除）
 @app.route('/users/<int:user_id>', methods=['GET'])
 def get_user(user_id):
-    # 模拟用户数据（实际项目可替换为数据库查询）
     mock_users = [
         {"id": 1, "name": "Alice", "age": 30},
         {"id": 2, "name": "Bob", "age": 25}
     ]
-    # 查找匹配ID的用户
     target_user = next((u for u in mock_users if u['id'] == user_id), None)
     if target_user:
         return jsonify({"user": target_user})
@@ -103,7 +101,7 @@ def get_user(user_id):
 # 🚀 启动Flask服务（生产环境配置）
 if __name__ == '__main__':
     app.run(
-        host='0.0.0.0',  # 允许局域网内其他设备访问（如192.168.0.100:5000）
-        port=5000,  # 服务端口（可修改，需避免与其他程序冲突）
-        debug=False  # 生产环境必须关闭debug，避免权限漏洞和性能问题
+        host='0.0.0.0',  # 允许局域网访问
+        port=5000,  # 服务端口（可修改）
+        debug=False  # 关闭调试模式，避免安全风险
     )
