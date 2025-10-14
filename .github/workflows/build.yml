@@ -35,29 +35,35 @@ jobs:
           fi
           ./python/bin/python --version
 
-      - name: 修复源并安装libaio1（关键：确保找到包）
+      - name: 手动部署 libaio.so.1（绕开系统源）
         run: |
-          # 1. 修复软件源（添加main组件，避免源缺失问题）
-          sudo sed -i 's/^# deb http:\/\/archive.ubuntu.com\/ubuntu\/ jammy main/deb http:\/\/archive.ubuntu.com\/ubuntu\/ jammy main/' /etc/apt/sources.list
-          sudo sed -i 's/^# deb http:\/\/security.ubuntu.com\/ubuntu\/ jammy-security main/deb http:\/\/security.ubuntu.com\/ubuntu\/ jammy-security main/' /etc/apt/sources.list
+          # 1. 直接下载包含libaio.so.1的压缩包（可靠源，x86_64架构）
+          wget https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb
           
-          # 2. 强制更新源（获取最新包列表）
-          sudo apt-get update -y --fix-missing
+          # 2. 不解压安装，直接提取libaio.so.1文件（用ar命令解压deb包）
+          ar x libaio1_0.3.113-4_amd64.deb data.tar.xz
+          tar -xf data.tar.xz ./usr/lib/x86_64-linux-gnu/libaio.so.1.0.1
           
-          # 3. 不指定版本，直接安装源中存在的libaio1
-          sudo apt-get install -y libaio1
+          # 3. 复制到系统库目录（dmPython会在这里查找依赖）
+          sudo cp ./usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/
           
-          # 4. 再次验证安装
-          if ! dpkg -l | grep -q "libaio1"; then
-            echo "错误：libaio1安装失败，无法继续"
+          # 4. 创建软链接（dmPython依赖libaio.so.1，而非具体版本号）
+          sudo ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/libaio.so.1
+          
+          # 5. 更新系统库缓存，确保能识别新部署的库
+          sudo ldconfig
+          
+          # 6. 验证部署结果（检查libaio.so.1是否存在）
+          if ! ldconfig -p | grep -q "libaio.so.1"; then
+            echo "错误：libaio.so.1部署失败"
             exit 1
           fi
-          echo "✅ libaio1安装成功"
+          echo "✅ libaio.so.1部署成功"
 
-      - name: 安装Python项目依赖
+      - name: 安装Python项目依赖（含dmPython）
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 安装依赖（dmPython指定版本，避免兼容性问题）
+          # 安装dmPython（此时已能找到libaio.so.1）
           ./python/bin/python -m pip install \
             dmPython==2.5.1 \
             pandas==2.1.4 \
@@ -75,6 +81,8 @@ jobs:
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
+            # 关键：打包时携带libaio.so.1，避免运行环境缺失
+            --add-binary="/usr/lib/x86_64-linux-gnu/libaio.so.1:." \
             main.py
 
       - name: 保存打包产物
