@@ -31,110 +31,27 @@ jobs:
           fi
           ./python/bin/python --version
 
-      - name: 安装解压工具（binutils含ar，zstd处理压缩）
+      - name: 直接通过系统包管理器安装libaio1（最可靠方式）
         run: |
+          # 更新包索引
           sudo apt-get update -y
-          sudo apt-get install -y binutils zstd
-          echo "✅ 工具安装完成：ar版本=$(ar --version | head -1)，zstd版本=$(zstd --version | head -1)"
-
-      - name: 多源多版本下载libaio1（确保找到有效包）
-        run: |
-          # 定义备选源和版本（均包含libaio.so.1.0.1，按优先级排序）
-          declare -a SOURCES=(
-            "http://ftp.de.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.112-3_amd64.deb"  # Debian源（高优先级）
-            "http://ftp.us.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.112-1_amd64.deb"
-            "http://ftp.tw.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.111-1_amd64.deb"
-            "https://debian.mirror.ac.za/debian/pool/main/liba/libaio/libaio1_0.3.112-3_amd64.deb"
-          )
           
-          # 对应的文件大小（用于校验下载完整性）
-          declare -A EXPECTED_SIZES=(
-            ["0.3.112-3"]=6508
-            ["0.3.112-1"]=6496
-            ["0.3.111-1"]=6484
-          )
-          
-          # 循环尝试所有源，直到下载成功
-          for url in "${SOURCES[@]}"; do
-            filename=$(basename "$url")
-            version=$(echo "$filename" | grep -oP '0\.3\.\d+-\d+')  # 提取版本号
-            
-            echo "尝试下载：$url（版本：$version）"
-            if wget -O "$filename" "$url"; then
-              # 验证文件大小
-              actual_size=$(stat -c "%s" "$filename")
-              expected_size=${EXPECTED_SIZES[$version]}
-              
-              if [ "$actual_size" -eq "$expected_size" ]; then
-                echo "✅ 下载成功并校验通过：$filename（大小：$actual_size字节）"
-                DEB_FILE="$filename"
-                break
-              else
-                echo "文件大小不匹配，预期：$expected_size，实际：$actual_size，跳过该文件"
-                rm "$filename"
-              fi
-            else
-              echo "下载失败，尝试下一个源..."
-            fi
-          done
-          
-          # 检查是否成功获取deb包
-          if [ -z "$DEB_FILE" ]; then
-            echo "错误：所有源均下载失败"
-            exit 1
-          fi
-
-      - name: 解压deb包并查找libaio.so.1.0.1
-        run: |
-          TEMP_DIR="temp_lib"
-          mkdir -p "$TEMP_DIR"
-          
-          # 提取deb包内容
-          ar x "$DEB_FILE" --output="$TEMP_DIR"
-          
-          # 查找数据文件
-          DATA_TAR=$(find "$TEMP_DIR" -name "data.tar.*")
-          if [ -z "$DATA_TAR" ]; then
-            echo "错误：未找到data.tar文件"
-            ls -la "$TEMP_DIR"
-            exit 1
-          fi
-          echo "找到数据文件：$DATA_TAR"
-          
-          # 解压数据文件
-          if [[ "$DATA_TAR" == *.gz ]]; then
-            tar -xzf "$DATA_TAR" -C "$TEMP_DIR"
-          elif [[ "$DATA_TAR" == *.xz ]]; then
-            tar -xf "$DATA_TAR" -C "$TEMP_DIR"
-          elif [[ "$DATA_TAR" == *.zst ]]; then
-            tar -I zstd -xf "$DATA_TAR" -C "$TEMP_DIR"
-          else
-            echo "错误：不支持的格式"
+          # 直接安装libaio1（系统会自动选择可用版本，确保包含libaio.so.1）
+          if ! sudo apt-get install -y libaio1; then
+            echo "错误：系统包管理器安装libaio1失败"
             exit 1
           fi
           
-          # 查找目标文件
-          LIB_PATH=$(find "$TEMP_DIR" -name "libaio.so.1.0.1" 2>/dev/null)
-          if [ -z "$LIB_PATH" ]; then
-            echo "错误：未找到libaio.so.1.0.1，文件列表："
-            ls -R "$TEMP_DIR"
-            exit 1
-          fi
-          echo "找到目标文件：$LIB_PATH"
-          
-          # 部署到系统目录
-          sudo cp "$LIB_PATH" /usr/lib/x86_64-linux-gnu/
-          sudo ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/libaio.so.1
-          sudo ldconfig
-          
-          # 验证
+          # 验证libaio.so.1是否存在
           if ! ldconfig -p | grep -q "libaio.so.1"; then
-            echo "错误：部署失败"
+            echo "错误：安装后未找到libaio.so.1"
             exit 1
           fi
-          echo "✅ libaio部署成功"
+          
+          # 显示安装路径，确认存在
+          echo "✅ libaio1安装成功，路径：$(ldconfig -p | grep "libaio.so.1" | awk '{print $4}')"
 
-      - name: 安装Python依赖
+      - name: 安装Python依赖（含dmPython）
         run: |
           ./python/bin/python -m pip install --upgrade pip
           ./python/bin/python -m pip install \
@@ -144,8 +61,11 @@ jobs:
             werkzeug==2.3.7 \
             pyinstaller==6.16.0
 
-      - name: 打包应用
+      - name: 打包Linux可执行程序（携带libaio.so.1）
         run: |
+          # 找到libaio.so.1的实际路径
+          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | awk '{print $4}')
+          
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -154,10 +74,10 @@ jobs:
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
-            --add-binary="/usr/lib/x86_64-linux-gnu/libaio.so.1:." \
+            --add-binary="$LIB_AIO_PATH:." \  # 携带系统安装的libaio库
             main.py
 
-      - name: 保存产物
+      - name: 保存打包产物
         uses: actions/upload-artifact@v4
         with:
           name: myapp-static
@@ -169,12 +89,12 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: 下载产物
+      - name: 下载打包产物
         uses: actions/download-artifact@v4
         with:
           name: myapp-static
 
-      - name: 创建Release
+      - name: 创建GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: myapp-linux
