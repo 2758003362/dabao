@@ -59,8 +59,16 @@ jobs:
             echo "错误：libaio1安装失败"
             exit 1
           fi
-          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | awk '{print $4}')
-          echo "✅ libaio1安装成功，路径：$LIB_AIO_PATH"
+          
+          # 关键修复1：只取第一个匹配的libaio.so.1路径，清除换行符
+          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n')
+          echo "获取到的libaio.so.1路径：$LIB_AIO_PATH"  # 调试打印路径
+          
+          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+            echo "错误：无效的libaio.so.1路径"
+            exit 1
+          fi
+          echo "✅ libaio1安装成功，有效路径：$LIB_AIO_PATH"
 
       - name: 安装Python依赖
         run: |
@@ -75,11 +83,11 @@ jobs:
           fi
           echo "✅ 所有依赖安装完成"
 
-      - name: 打包应用（修复入口脚本路径）
+      - name: 打包应用（修复libaio路径）
         run: |
-          # 关键：验证入口脚本是否存在
+          # 验证入口脚本
           echo "当前目录文件列表："
-          ls -la  # 打印目录内容，确认main.py存在
+          ls -la
           
           if [ ! -f "./main.py" ]; then
             echo "错误：未找到入口脚本main.py"
@@ -87,14 +95,14 @@ jobs:
           fi
           echo "✅ 确认main.py存在"
           
-          # 确认libaio路径有效
-          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | awk '{print $4}')
-          if [ -z "$LIB_AIO_PATH" ]; then
-            echo "错误：libaio.so.1路径为空"
+          # 关键修复2：再次验证libaio路径有效性
+          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+            echo "错误：打包阶段libaio.so.1路径无效"
             exit 1
           fi
+          echo "打包使用的libaio路径：$LIB_AIO_PATH"
           
-          # 明确指定入口脚本为./main.py
+          # 打包命令（使用清理后的路径）
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -103,8 +111,8 @@ jobs:
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
-            --add-binary="$LIB_AIO_PATH:." \
-            ./main.py  # 明确路径，避免PyInstaller找不到文件
+            --add-binary="$LIB_AIO_PATH:." \  # 使用单一有效路径
+            ./main.py
           
           if [ ! -f "dist/myapp-linux" ]; then
             echo "错误：打包失败，未生成产物"
