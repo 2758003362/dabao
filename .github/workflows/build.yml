@@ -16,8 +16,8 @@ jobs:
       - name: 安装基础工具
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y musl-tools tree findutils
-          for tool in musl-gcc tree find; do
+          sudo apt-get install -y musl-tools tree findutils wget unzip
+          for tool in musl-gcc tree find wget unzip; do
             if ! command -v $tool &> /dev/null; then
               echo "错误：工具$tool安装失败"
               exit 1
@@ -25,44 +25,66 @@ jobs:
           done
           echo "✅ 基础工具安装完成"
 
+      - name: 下载达梦客户端依赖（dmPython源码）
+        run: |
+          # 下载dmPython源码（达梦官网或备用链接）
+          DM_CLIENT_URL="https://download.dameng.com/eco/adapter/python/dmPython-2.5.22-src.zip"
+          echo "开始下载dmPython源码：$DM_CLIENT_URL"
+          
+          if ! wget --retry-connrefused --waitretry=1 -t 3 "$DM_CLIENT_URL" -O dmPython-src.zip; then
+            echo "错误：主链接下载失败，尝试备用链接"
+            DM_CLIENT_URL="https://gitee.com/dameng/DM8/raw/master/eco/python/dmPython-2.5.22-src.zip"
+            if ! wget "$DM_CLIENT_URL" -O dmPython-src.zip; then
+              echo "错误：所有dmPython源码链接均失效"
+              exit 1
+            fi
+          fi
+          
+          # 解压源码
+          unzip -q dmPython-src.zip -d dmPython-src
+          if [ ! -d "dmPython-src/dmPython-2.5.22" ]; then
+            echo "错误：dmPython源码解压失败"
+            ls -l dmPython-src
+            exit 1
+          fi
+          echo "✅ dmPython源码下载完成"
+
       - name: 配置静态Python（适配python3命名）
         run: |
-          # 确认存在的Python版本
+          # Python版本配置
           PYTHON_TAR="cpython-3.10.12+20230726-x86_64-unknown-linux-musl-install_only.tar.gz"
           PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20230726/$PYTHON_TAR"
           EXPECTED_SHA256="9080014bee2d4bd1f96bcbebf447d40c35ae9354382246add1160bd0d433ebf7"
           
-          # 下载Python压缩包
-          echo "开始下载静态Python: $PYTHON_URL"
+          # 下载Python
+          echo "下载静态Python: $PYTHON_URL"
           if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 \
-                   --max-redirect=10 --content-disposition "$PYTHON_URL" -O "$PYTHON_TAR"; then
+                   "$PYTHON_URL" -O "$PYTHON_TAR"; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
           # 校验完整性
-          echo "校验压缩包完整性..."
+          echo "校验压缩包..."
           ACTUAL_SHA256=$(sha256sum "$PYTHON_TAR" | awk '{print $1}')
           if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-            echo "错误：Python压缩包损坏（SHA256不匹配）"
-            echo "实际值: $ACTUAL_SHA256"
-            echo "预期值: $EXPECTED_SHA256"
+            echo "错误：SHA256不匹配（实际:$ACTUAL_SHA256 预期:$EXPECTED_SHA256）"
             exit 1
           fi
           
-          # 解压保留原始结构
+          # 解压
           mkdir -p python-musl
-          echo "开始解压Python压缩包..."
+          echo "解压Python压缩包..."
           if ! tar -xzvf "$PYTHON_TAR" -C python-musl; then
-            echo "错误：Python压缩包解压失败"
+            echo "错误：Python解压失败"
             exit 1
           fi
           
           # 查找Python可执行文件
-          echo "=== 查找Python可执行文件 ==="
+          echo "查找Python可执行文件..."
           ALL_PYTHON_FILES=$(find python-musl -name "python*" -type f | sort)
           if [ -n "$ALL_PYTHON_FILES" ]; then
-            echo "找到的Python相关文件列表："
+            echo "找到的Python文件："
             echo "$ALL_PYTHON_FILES"
           fi
           
@@ -74,14 +96,13 @@ jobs:
           
           # 容错机制
           if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            echo "警告：未找到标准路径的Python，尝试选择第一个可执行文件"
+            echo "警告：尝试选择第一个Python文件"
             PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | head -n 1)
           fi
           
           # 验证
           if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
             echo "错误：未找到Python可执行文件"
-            echo "解压后的完整目录结构："
             tree python-musl
             exit 1
           fi
@@ -94,46 +115,39 @@ jobs:
           fi
           
           # 验证静态链接
-          echo "=== Python文件信息 ==="
+          echo "Python信息："
           echo "路径：$PYTHON_BIN"
           echo "版本：$("$PYTHON_BIN" --version 2>&1)"
           echo "类型：$(file "$PYTHON_BIN" | awk -F ',' '{print $1}')"
           
           if ! file "$PYTHON_BIN" | grep -q "statically linked"; then
-            echo "错误：当前Python版本不是静态链接！"
+            echo "错误：Python不是静态链接版本"
             exit 1
           fi
           
           # 记录路径
+          PYTHON_INCLUDE=$(dirname "$PYTHON_BIN")/../include/python3.10
+          PYTHON_LIB=$(dirname "$PYTHON_BIN")/../lib/python3.10
           echo "PYTHON_BIN=$PYTHON_BIN" >> $GITHUB_ENV
-          PYTHON_LIB=$(dirname "$PYTHON_BIN")/../lib/python3.10/site-packages
-          if [ ! -d "$PYTHON_LIB" ]; then
-            echo "警告：默认site-packages路径不存在，动态查找..."
-            PYTHON_LIB=$(find python-musl -name "site-packages" -type d | grep "python3.10" | head -n 1)
-          fi
+          echo "PYTHON_INCLUDE=$PYTHON_INCLUDE" >> $GITHUB_ENV
           echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
-          
-          echo "✅ 静态Python配置完成"
+          echo "✅ Python配置完成"
 
-      - name: 编译静态libaio（强制musl-gcc，适配版本号）
+      - name: 编译静态libaio（musl适配）
         run: |
           # 下载libaio源码
           wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
           tar -xzf libaio-libaio-0.3.113.tar.gz
           cd libaio-libaio-0.3.113
           
-          # 关键修复1：彻底修改Makefile，强制使用musl-gcc
-          echo "强制修改Makefile使用musl-gcc..."
-          # 直接替换整个CC定义，确保生效
+          # 修改Makefile适配musl
           sed -i.bak "s/^CC\s*=.*$/CC = musl-gcc/" src/Makefile
-          # 强制设置CFLAGS和LDFLAGS，确保静态编译
-          sed -i "s/^CFLAGS\s*=.*$/CFLAGS = -fPIC -static -I\/usr\/include -D_GNU_SOURCE -Wall/" src/Makefile
+          sed -i "s/^CFLAGS\s*=.*$/CFLAGS = -fPIC -static -I\/usr/include -D_GNU_SOURCE -Wall/" src/Makefile
           sed -i "s/^LDFLAGS\s*=.*$/LDFLAGS = -static/" src/Makefile
-          # 显示修改后的Makefile关键配置，确认生效
-          echo "修改后的src/Makefile关键配置："
+          echo "修改后的Makefile配置："
           grep -E "^CC|^CFLAGS|^LDFLAGS" src/Makefile
           
-          # 关键修复2：移除对bits/wordsize.h的依赖
+          # 移除glibc特有头文件依赖
           find src/ -name "*.c" -exec sed -i \
             -e '/#include <bits\/wordsize.h>/d' \
             -e '1i #define __WORDSIZE 64' {} +
@@ -145,67 +159,88 @@ jobs:
             exit 1
           fi
           
-          # 静态编译（显示详细过程）
-          echo "开始编译libaio（musl静态链接）..."
+          # 编译
           make V=1
           
-          # 关键修复3：适配实际生成的库文件名（日志显示为libaio.so.1.0.2）
-          echo "查找生成的libaio库文件..."
+          # 查找生成的库文件
           LIB_AIO_SO=$(find src/ -name "libaio.so.*" | sort -V | tail -n 1)
           if [ -z "$LIB_AIO_SO" ] || [ ! -f "$LIB_AIO_SO" ]; then
-            echo "错误：未找到生成的libaio.so文件"
-            ls -l src/  # 显示src目录文件，辅助排查
+            echo "错误：未找到libaio库文件"
+            ls -l src/
             exit 1
           fi
-          echo "找到的libaio库文件：$LIB_AIO_SO"
           
-          # 安装到系统目录
+          # 安装
           sudo cp "$LIB_AIO_SO" /usr/lib/x86_64-linux-gnu/
-          # 创建版本无关的符号链接
           sudo ln -sf "$(basename "$LIB_AIO_SO")" /usr/lib/x86_64-linux-gnu/libaio.so.1
           LIB_AIO_PATH="/usr/lib/x86_64-linux-gnu/libaio.so.1"
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          
-          # 验证链接有效性
-          if ! ls -l "$LIB_AIO_PATH"; then
-            echo "错误：libaio符号链接创建失败"
-            exit 1
-          fi
-          echo "✅ 静态libaio编译并安装完成"
+          echo "✅ libaio编译完成"
           cd ..
 
-      - name: 安装Python依赖
+      - name: 从源码编译dmPython（musl适配）
         run: |
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
+          PYTHON_INCLUDE="${{ env.PYTHON_INCLUDE }}"
           PYTHON_LIB="${{ env.PYTHON_LIB }}"
+          LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           
-          if [ -z "$PYTHON_BIN" ] || [ -z "$PYTHON_LIB" ]; then
-            echo "错误：Python路径或依赖路径缺失"
+          # 验证依赖路径
+          for path in "$PYTHON_BIN" "$PYTHON_INCLUDE" "$PYTHON_LIB" "$LIB_AIO_PATH"; do
+            if [ -z "$path" ] || [ ! -e "$path" ]; then
+              echo "错误：依赖路径$path无效"
+              exit 1
+            fi
+          done
+          
+          # 进入源码目录
+          cd dmPython-src/dmPython-2.5.22
+          
+          # 修改setup.py适配musl编译
+          echo "修改dmPython编译配置..."
+          sed -i "s/self.compiler = 'gcc'/self.compiler = 'musl-gcc'/" setup.py
+          sed -i "s/extra_compile_args=\[\]/extra_compile_args=['-I$PYTHON_INCLUDE', '-I\/usr/include', '-fPIC']/" setup.py
+          sed -i "s/extra_link_args=\[\]/extra_link_args=['-L$PYTHON_LIB', '-L\/usr/lib/x86_64-linux-gnu', '-laio', '-static']/" setup.py
+          
+          # 编译安装
+          echo "编译安装dmPython..."
+          $PYTHON_BIN setup.py install
+          
+          # 验证安装
+          if ! $PYTHON_BIN -c "import dmPython" &> /dev/null; then
+            echo "错误：dmPython安装失败"
+            $PYTHON_BIN -c "import dmPython" 2>&1  # 打印错误详情
             exit 1
           fi
+          echo "✅ dmPython安装完成"
+          cd ../../
+
+      - name: 安装其他Python依赖
+        run: |
+          PYTHON_BIN="${{ env.PYTHON_BIN }}"
           
+          # 升级pip
           $PYTHON_BIN -m pip install --upgrade pip
+          
+          # 安装其他依赖
           $PYTHON_BIN -m pip install \
-            dmPython==2.5.22 \
             pandas==2.1.4 \
             flask==2.3.3 \
             werkzeug==2.3.7 \
             pyinstaller==6.16.0 \
             --no-cache-dir
           
+          # 验证依赖
           if ! $PYTHON_BIN -c "import dmPython; import pandas; import flask" &> /dev/null; then
             echo "错误：依赖导入失败"
-            DM_PYTHON_PATH=$($PYTHON_BIN -c "import dmPython; print(dmPython.__file__)")
-            echo "dmPython路径：$DM_PYTHON_PATH"
-            file "$DM_PYTHON_PATH"
             exit 1
           fi
-          echo "✅ 所有Python依赖安装完成"
+          echo "✅ 所有依赖安装完成"
 
       - name: 静态打包应用
         run: |
           if [ ! -f "./main.py" ]; then
-            echo "错误：未找到入口脚本main.py"
+            echo "错误：未找到入口文件main.py"
             exit 1
           fi
           
@@ -213,16 +248,10 @@ jobs:
           PYTHON_LIB="${{ env.PYTHON_LIB }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           
-          for path in "$PYTHON_BIN" "$PYTHON_LIB" "$LIB_AIO_PATH"; do
-            if [ -z "$path" ] || [ ! -e "$path" ]; then
-              echo "错误：路径$path无效"
-              exit 1
-            fi
-          done
-          
-          echo "开始打包，使用Python路径：$PYTHON_BIN"
+          # 执行打包
+          echo "开始打包应用..."
           $PYTHON_BIN -m PyInstaller --onefile --name myapp-linux \
-            --paths="$PYTHON_LIB" \
+            --paths="$PYTHON_LIB/site-packages" \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
@@ -233,17 +262,21 @@ jobs:
             --noupx \
             ./main.py
           
+          # 验证产物
           if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：打包失败，未生成产物"
+            echo "错误：打包失败"
             if [ -f "build/myapp-linux/warn-myapp-linux.txt" ]; then
               echo "打包警告日志："
               cat build/myapp-linux/warn-myapp-linux.txt
             fi
             exit 1
           fi
-          echo "✅ 打包完成，产物信息："
+          
+          # 验证静态链接
+          echo "打包产物信息："
           file dist/myapp-linux
           echo "产物大小：$(du -sh dist/myapp-linux | awk '{print $1}')"
+          echo "✅ 应用打包完成"
 
       - name: 保存产物
         uses: actions/upload-artifact@v4
