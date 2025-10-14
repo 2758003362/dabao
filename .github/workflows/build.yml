@@ -58,7 +58,7 @@ jobs:
             exit 1
           fi
           
-          # 查找Python可执行文件（适配python3命名）
+          # 查找Python可执行文件
           echo "=== 查找Python可执行文件 ==="
           ALL_PYTHON_FILES=$(find python-musl -name "python*" -type f | sort)
           if [ -n "$ALL_PYTHON_FILES" ]; then
@@ -115,47 +115,63 @@ jobs:
           
           echo "✅ 静态Python配置完成"
 
-      - name: 编译静态libaio（适配musl，修复头文件缺失）
+      - name: 编译静态libaio（强制musl-gcc，适配版本号）
         run: |
           # 下载libaio源码
           wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
           tar -xzf libaio-libaio-0.3.113.tar.gz
           cd libaio-libaio-0.3.113
           
-          # 关键修复：替换源码中对glibc特有头文件的依赖
-          # 1. 手动定义__WORDSIZE（64位系统），避免包含bits/wordsize.h
-          # 2. 修改src/Makefile，添加兼容musl的编译参数
-          echo "修复libaio源码以适配musl..."
-          # 替换所有源码中对bits/wordsize.h的引用，并定义__WORDSIZE
+          # 关键修复1：彻底修改Makefile，强制使用musl-gcc
+          echo "强制修改Makefile使用musl-gcc..."
+          # 直接替换整个CC定义，确保生效
+          sed -i.bak "s/^CC\s*=.*$/CC = musl-gcc/" src/Makefile
+          # 强制设置CFLAGS和LDFLAGS，确保静态编译
+          sed -i "s/^CFLAGS\s*=.*$/CFLAGS = -fPIC -static -I\/usr\/include -D_GNU_SOURCE -Wall/" src/Makefile
+          sed -i "s/^LDFLAGS\s*=.*$/LDFLAGS = -static/" src/Makefile
+          # 显示修改后的Makefile关键配置，确认生效
+          echo "修改后的src/Makefile关键配置："
+          grep -E "^CC|^CFLAGS|^LDFLAGS" src/Makefile
+          
+          # 关键修复2：移除对bits/wordsize.h的依赖
           find src/ -name "*.c" -exec sed -i \
-            -e 's/#include <bits\/wordsize.h>//g' \
-            -e 's/^/#define __WORDSIZE 64\n/' {} +
+            -e '/#include <bits\/wordsize.h>/d' \
+            -e '1i #define __WORDSIZE 64' {} +
           
-          # 修改Makefile，强制使用musl-gcc并添加兼容参数
-          sed -i 's/CC = gcc/CC = musl-gcc/' src/Makefile
-          sed -i 's/CFLAGS = -Wall -Werror -O2 -g/CFLAGS += -fPIC -static -I\/usr\/include -D_GNU_SOURCE/' src/Makefile
-          sed -i 's/LDFLAGS = -shared/LDFLAGS += -static/' src/Makefile
-          
-          # 复制头文件（确保libaio.h存在）
+          # 复制头文件
           sudo cp src/libaio.h /usr/include/
           if [ ! -f "/usr/include/libaio.h" ]; then
             echo "错误：libaio.h复制失败"
             exit 1
           fi
           
-          # 静态编译（添加V=1显示详细编译命令）
+          # 静态编译（显示详细过程）
+          echo "开始编译libaio（musl静态链接）..."
           make V=1
-          if [ ! -f "src/libaio.so.1.0.1" ]; then
-            echo "错误：libaio编译失败"
+          
+          # 关键修复3：适配实际生成的库文件名（日志显示为libaio.so.1.0.2）
+          echo "查找生成的libaio库文件..."
+          LIB_AIO_SO=$(find src/ -name "libaio.so.*" | sort -V | tail -n 1)
+          if [ -z "$LIB_AIO_SO" ] || [ ! -f "$LIB_AIO_SO" ]; then
+            echo "错误：未找到生成的libaio.so文件"
+            ls -l src/  # 显示src目录文件，辅助排查
             exit 1
           fi
+          echo "找到的libaio库文件：$LIB_AIO_SO"
           
           # 安装到系统目录
-          sudo cp src/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/
-          sudo ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/libaio.so.1
+          sudo cp "$LIB_AIO_SO" /usr/lib/x86_64-linux-gnu/
+          # 创建版本无关的符号链接
+          sudo ln -sf "$(basename "$LIB_AIO_SO")" /usr/lib/x86_64-linux-gnu/libaio.so.1
           LIB_AIO_PATH="/usr/lib/x86_64-linux-gnu/libaio.so.1"
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          echo "✅ 静态libaio编译完成"
+          
+          # 验证链接有效性
+          if ! ls -l "$LIB_AIO_PATH"; then
+            echo "错误：libaio符号链接创建失败"
+            exit 1
+          fi
+          echo "✅ 静态libaio编译并安装完成"
           cd ..
 
       - name: 安装Python依赖
