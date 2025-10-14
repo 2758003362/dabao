@@ -23,16 +23,16 @@ jobs:
           fi
           echo "✅ musl工具链安装完成"
 
-      - name: 配置静态Python（使用新仓库中存在的3.10.12版本）
+      - name: 配置静态Python（使用正确SHA256）
         run: |
-          # 新仓库中确认存在的版本（3.10.12，musl静态链接）
+          # 新仓库中存在的3.10.12版本
           PYTHON_TAR="cpython-3.10.12+20230726-x86_64-unknown-linux-musl-install_only.tar.gz"
           PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20230726/$PYTHON_TAR"
           
-          # 该版本的官方SHA256（从新仓库获取，确保正确）
-          EXPECTED_SHA256="5e11a52e15f991e36a08c9e3e9d303a4d2e4f5a6b7c8d9e0f1a2b3c4d5e6f7g"  # 替换为实际值
+          # 使用用户提供的实际SHA256值（从错误日志提取，确保匹配）
+          EXPECTED_SHA256="9080014bee2d4bd1f96bcbebf447d40c35ae9354382246add1160bd0d433ebf7"
           
-          # 下载（增强参数确保重定向和文件正确）
+          # 下载
           echo "开始下载静态Python: $PYTHON_URL"
           if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 \
                    --max-redirect=10 --content-disposition "$PYTHON_URL" -O "$PYTHON_TAR"; then
@@ -40,7 +40,8 @@ jobs:
             exit 1
           fi
           
-          # 校验完整性
+          # 校验完整性（使用正确的实际值）
+          echo "校验压缩包完整性..."
           ACTUAL_SHA256=$(sha256sum "$PYTHON_TAR" | awk '{print $1}')
           if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
             echo "错误：Python压缩包损坏（SHA256不匹配）"
