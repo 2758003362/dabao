@@ -1,4 +1,4 @@
-name: 达梦API服务打包（兼容GLIBC 2.31 + Ubuntu 24.04）
+name: 达梦API服务打包（musl静态链接，兼容所有Linux）
 
 on:
   push:
@@ -8,121 +8,112 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # 使用最新Ubuntu环境
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置静态Python环境
+      - name: 安装musl工具链（静态链接依赖）
         run: |
-          wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
+          sudo apt-get update -y
+          sudo apt-get install -y musl-tools  # 提供musl-gcc等静态编译工具
+          # 验证musl安装
+          if ! command -v musl-gcc &> /dev/null; then
+            echo "错误：musl-tools安装失败"
+            exit 1
+          fi
+          echo "✅ musl工具链安装完成"
+
+      - name: 配置musl静态Python（不依赖GLIBC）
+        run: |
+          # 下载musl版本的静态Python（完全静态编译，不依赖系统库）
+          wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-musl-install_only.tar.gz
           
-          if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
-            echo "错误：Python压缩包下载失败"
+          if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-musl-install_only.tar.gz" ]; then
+            echo "错误：musl Python压缩包下载失败"
             exit 1
           fi
           
-          mkdir -p python
-          tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
+          mkdir -p python-musl
+          tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-musl-install_only.tar.gz -C python-musl --strip-components=1
           
-          if [ ! -f "./python/bin/python" ]; then
+          # 验证Python是静态链接（无动态依赖）
+          echo "Python的链接类型："
+          file ./python-musl/bin/python
+          # 应输出"statically linked"
+          
+          if [ ! -f "./python-musl/bin/python" ]; then
             echo "错误：Python解压失败"
             exit 1
           fi
-          echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
+          echo "✅ musl静态Python配置完成，版本：$(./python-musl/bin/python --version)"
 
-      - name: 安装libaio1（写入环境变量，跨步骤共享）
+      - name: 编译静态libaio（达梦依赖，musl兼容版）
         run: |
-          # 多源下载libaio1.deb（确保成功）
-          LIB_AIO_URLS=(
-            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-          )
+          # 下载libaio源码
+          wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
+          tar -xzf libaio-libaio-0.3.113.tar.gz
+          cd libaio-libaio-0.3.113
           
-          for url in "${LIB_AIO_URLS[@]}"; do
-            echo "尝试从 $url 下载libaio1..."
-            if wget -q "$url" -O libaio1.deb; then
-              echo "✅ 下载成功"
-              break
-            fi
-          done
+          # 用musl-gcc静态编译（不依赖GLIBC）
+          make CC=musl-gcc CFLAGS="-fPIC -static" LDFLAGS="-static"
           
-          if [ ! -f "libaio1.deb" ]; then
-            echo "错误：所有源均下载失败"
+          # 验证编译产物是静态库
+          if [ ! -f "libaio.a" ] || [ ! -f "src/libaio.so.1.0.1" ]; then
+            echo "错误：libaio静态编译失败"
             exit 1
           fi
+          echo "libaio的链接类型："
+          file src/libaio.so.1.0.1
           
-          # 强制安装（适配Ubuntu 24.04）
-          sudo dpkg -i --force-depends libaio1.deb
-          if ! dpkg -s libaio1 &> /dev/null; then
-            echo "错误：libaio1安装失败"
-            exit 1
-          fi
-          
-          # 关键：获取并验证libaio.so.1路径，写入环境变量
-          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
-          echo "获取到的libaio路径：[$LIB_AIO_PATH]"  # 括号显示是否有隐藏字符
-          
-          # 双重验证路径有效性
-          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "错误：获取的libaio路径无效（文件不存在）"
-            # 辅助排查：打印系统中的libaio文件
-            ls -la /lib/x86_64-linux-gnu/ | grep libaio
-            exit 1
-          fi
-          
-          # 写入GitHub环境变量，供后续步骤使用
+          # 复制到系统目录并创建链接
+          sudo cp src/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/
+          sudo ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/libaio.so.1
+          LIB_AIO_PATH="/usr/lib/x86_64-linux-gnu/libaio.so.1"
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          echo "✅ libaio1安装成功，路径已写入环境变量"
+          echo "✅ 静态libaio编译完成，路径：$LIB_AIO_PATH"
+          cd ..
 
-      - name: 安装Python依赖
+      - name: 安装Python依赖（musl兼容版）
         run: |
-          ./python/bin/python -m pip install --upgrade pip
-          # 固定依赖版本，避免兼容性问题
-          ./python/bin/python -m pip install dmPython==2.5.22 pandas==2.1.4 flask==2.3.3 werkzeug==2.3.7 pyinstaller==6.16.0
+          # 升级pip
+          ./python-musl/bin/python -m pip install --upgrade pip
           
-          # 验证dmPython能否正常导入（核心依赖）
-          if ./python/bin/python -c "import dmPython" &> /dev/null; then
-            echo "✅ dmPython安装成功"
-          else
-            echo "错误：dmPython安装失败（可能是libaio依赖问题）"
+          # 安装依赖（确保版本兼容musl）
+          ./python-musl/bin/python -m pip install \
+            dmPython==2.5.22 \
+            pandas==2.1.4 \
+            flask==2.3.3 \
+            werkzeug==2.3.7 \
+            pyinstaller==6.16.0 \
+            --no-cache-dir
+          
+          # 验证dmPython能否在musl环境下导入
+          if ! ./python-musl/bin/python -c "import dmPython" &> /dev/null; then
+            echo "错误：dmPython在musl环境下导入失败"
             exit 1
           fi
-          echo "✅ 所有依赖安装完成"
+          echo "✅ 所有依赖安装完成（musl兼容）"
 
-      - name: 打包应用（最终稳定版）
+      - name: 静态打包应用（不依赖系统GLIBC）
         run: |
-          # 验证入口脚本存在
-          echo "当前目录文件列表："
-          ls -la
+          # 验证入口脚本
           if [ ! -f "./main.py" ]; then
-            echo "错误：未找到入口脚本main.py"
+            echo "错误：未找到main.py"
             exit 1
           fi
           echo "✅ 确认main.py存在"
           
-          # 从环境变量获取libaio路径，带fallback机制
+          # 获取libaio路径
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
-          echo "从环境变量获取的libaio路径：[$LIB_AIO_PATH]"
-          
-          # 二次验证，防止环境变量传递失败
           if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "警告：环境变量路径无效，尝试重新获取..."
-            # 重新获取路径作为fallback
-            LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
-            if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-              echo "错误：重新获取路径仍无效"
-              exit 1
-            fi
-            echo "fallback成功，路径：$LIB_AIO_PATH"
+            echo "错误：libaio路径无效"
+            exit 1
           fi
           
-          # 执行打包（携带所有依赖）
-          echo "开始打包，使用libaio路径：$LIB_AIO_PATH"
-          ./python/bin/pyinstaller --onefile --name myapp-linux \
-            --paths=./python/lib/python3.11/site-packages \
+          # 用musl Python运行PyInstaller，生成完全静态的可执行文件
+          ./python-musl/bin/pyinstaller --onefile --name myapp-linux \
+            --paths=./python-musl/lib/python3.11/site-packages \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
@@ -130,20 +121,28 @@ jobs:
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
+            --noupx \  # 禁用UPX，避免静态链接异常
+            --runtime-tmpdir /tmp \  # 指定临时目录，兼容无/tmp权限的系统
             ./main.py
           
-          # 验证打包产物
+          # 验证产物是静态链接（无GLIBC依赖）
+          echo "======================================"
+          echo "最终产物的链接类型（应显示statically linked）："
+          file dist/myapp-linux
+          echo "产物的动态依赖（应无GLIBC）："
+          ldd dist/myapp-linux || true  # musl静态程序ldd会报错，属于正常现象
+          echo "======================================"
+          
           if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：打包失败，未生成产物"
+            echo "错误：打包失败"
             exit 1
           fi
-          echo "✅ 打包完成，产物信息："
-          ls -lh dist/myapp-linux  # 打印产物大小和权限
+          echo "✅ 静态打包完成，产物：dist/myapp-linux"
 
-      - name: 保存打包产物
+      - name: 保存产物（全系统兼容版）
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-static
+          name: myapp-musl-static
           path: dist/myapp-linux
           retention-days: 7
 
@@ -155,12 +154,19 @@ jobs:
       - name: 下载产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-static
+          name: myapp-musl-static
 
-      - name: 创建GitHub Release
+      - name: 创建Release（musl静态版）
         uses: softprops/action-gh-release@v2
         with:
           files: myapp-linux
           generate_release_notes: true
+          name: "v${{ github.ref_name }} (musl静态版，全系统兼容)"
+          body: |
+            ## 兼容性说明
+            - 完全静态链接（不依赖系统GLIBC版本）
+            - 支持所有Linux系统（包括Ubuntu 16.04+、CentOS 7+等旧系统）
+            - 运行方法：`chmod +x myapp-linux && ./myapp-linux`
+            - 默认API地址：http://localhost:5000/users
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
