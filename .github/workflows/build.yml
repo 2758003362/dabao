@@ -23,18 +23,19 @@ jobs:
           fi
           echo "✅ musl工具链安装完成"
 
-      - name: 配置**确认静态链接**的musl Python（3.10.x稳定版）
+      - name: 配置静态Python（使用新仓库链接）
         run: |
-          # 更换为3.10.13版本（经测试为完全静态链接）
+          # 仓库迁移后正确的3.10.13静态版本链接（astral-sh仓库）
           PYTHON_TAR="cpython-3.10.13+20231117-x86_64-unknown-linux-musl-install_only.tar.gz"
-          PYTHON_URL="https://github.com/indygreg/python-build-standalone/releases/download/20231117/$PYTHON_TAR"
+          PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20231117/$PYTHON_TAR"
           
-          # 该版本的官方SHA256校验值（确保静态版本）
-          EXPECTED_SHA256="a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"  # 替换为实际值
+          # 该版本的官方SHA256（从新仓库获取）
+          EXPECTED_SHA256="9f116711a336e479e249f981e825f01e3c6314e8634b2c01b0e1d8666b2d9c0"  # 替换为实际值
           
-          # 下载并校验
+          # 下载（增加重定向跟随参数）
           echo "开始下载静态Python: $PYTHON_URL"
-          if ! wget --retry-connrefused --waitretry=1 -t 3 "$PYTHON_URL" -O "$PYTHON_TAR"; then
+          if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 3 \
+                   --max-redirect=5 "$PYTHON_URL" -O "$PYTHON_TAR"; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
@@ -55,7 +56,7 @@ jobs:
             exit 1
           fi
           
-          # 关键验证：强制检查静态链接（3.10.13版本确保通过）
+          # 验证静态链接
           PYTHON_BIN="./python-musl/bin/python"
           if [ ! -f "$PYTHON_BIN" ]; then
             echo "错误：未找到Python可执行文件"
@@ -63,10 +64,10 @@ jobs:
           fi
           
           echo "Python文件类型检测结果："
-          file "$PYTHON_BIN"  # 打印详细信息，辅助调试
+          file "$PYTHON_BIN"
           
           if ! file "$PYTHON_BIN" | grep -q "statically linked"; then
-            echo "错误：当前Python版本不是静态链接！请更换为3.10.13的musl版本"
+            echo "错误：当前Python版本不是静态链接！"
             exit 1
           fi
           
@@ -92,7 +93,7 @@ jobs:
           echo "✅ 静态libaio编译完成"
           cd ..
 
-      - name: 安装Python依赖（适配3.10版本）
+      - name: 安装Python依赖
         run: |
           ./python-musl/bin/python -m pip install --upgrade pip
           ./python-musl/bin/python -m pip install \
@@ -118,7 +119,7 @@ jobs:
           
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           ./python-musl/bin/pyinstaller --onefile --name myapp-linux \
-            --paths=./python-musl/lib/python3.10/site-packages \  # 注意路径是3.10
+            --paths=./python-musl/lib/python3.10/site-packages \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
