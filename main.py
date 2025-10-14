@@ -98,10 +98,10 @@ def get_user(user_id):
     return jsonify({"error": "用户不存在"}), 404  # 404状态码：资源未找到
 
 
-# 启动Flask服务（生产环境配置）
+# 启动Flask服务（生产环境配置，关闭debug）
 if __name__ == '__main__':
     app.run(
-        host='0.0.0.0',  # 允许局域网内其他设备访问
-        port=5000,  # 服务端口（可修改，需避免端口占用）
-        debug=False  # 关闭调试模式，解决权限与性能问题
+        host='0.0.0.0',  # 允许局域网访问
+        port=5000,  # 服务端口
+        debug=False  # 关闭调试模式，避免权限问题
     )
