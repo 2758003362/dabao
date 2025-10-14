@@ -31,8 +31,9 @@ jobs:
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
 
-      - name: 安装libaio1（dmPython依赖）
+      - name: 安装libaio1（写入环境变量，跨步骤共享）
         run: |
+          # 多源下载libaio1.deb（确保成功）
           LIB_AIO_URLS=(
             "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
@@ -53,56 +54,73 @@ jobs:
             exit 1
           fi
           
+          # 强制安装（适配Ubuntu 24.04）
           sudo dpkg -i --force-depends libaio1.deb
-          
           if ! dpkg -s libaio1 &> /dev/null; then
             echo "错误：libaio1安装失败"
             exit 1
           fi
           
-          # 关键修复1：只取第一个匹配的libaio.so.1路径，清除换行符
-          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n')
-          echo "获取到的libaio.so.1路径：$LIB_AIO_PATH"  # 调试打印路径
+          # 关键：获取并验证libaio.so.1路径，写入环境变量
+          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
+          echo "获取到的libaio路径：[$LIB_AIO_PATH]"  # 括号显示是否有隐藏字符
           
+          # 双重验证路径有效性
           if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "错误：无效的libaio.so.1路径"
+            echo "错误：获取的libaio路径无效（文件不存在）"
+            # 辅助排查：打印系统中的libaio文件
+            ls -la /lib/x86_64-linux-gnu/ | grep libaio
             exit 1
           fi
-          echo "✅ libaio1安装成功，有效路径：$LIB_AIO_PATH"
+          
+          # 写入GitHub环境变量，供后续步骤使用
+          echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
+          echo "✅ libaio1安装成功，路径已写入环境变量"
 
       - name: 安装Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
+          # 固定依赖版本，避免兼容性问题
           ./python/bin/python -m pip install dmPython==2.5.22 pandas==2.1.4 flask==2.3.3 werkzeug==2.3.7 pyinstaller==6.16.0
           
+          # 验证dmPython能否正常导入（核心依赖）
           if ./python/bin/python -c "import dmPython" &> /dev/null; then
             echo "✅ dmPython安装成功"
           else
-            echo "错误：dmPython安装失败"
+            echo "错误：dmPython安装失败（可能是libaio依赖问题）"
             exit 1
           fi
           echo "✅ 所有依赖安装完成"
 
-      - name: 打包应用（修复libaio路径）
+      - name: 打包应用（最终稳定版）
         run: |
-          # 验证入口脚本
+          # 验证入口脚本存在
           echo "当前目录文件列表："
           ls -la
-          
           if [ ! -f "./main.py" ]; then
             echo "错误：未找到入口脚本main.py"
             exit 1
           fi
           echo "✅ 确认main.py存在"
           
-          # 关键修复2：再次验证libaio路径有效性
-          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "错误：打包阶段libaio.so.1路径无效"
-            exit 1
-          fi
-          echo "打包使用的libaio路径：$LIB_AIO_PATH"
+          # 从环境变量获取libaio路径，带fallback机制
+          LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
+          echo "从环境变量获取的libaio路径：[$LIB_AIO_PATH]"
           
-          # 打包命令（使用清理后的路径）
+          # 二次验证，防止环境变量传递失败
+          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+            echo "警告：环境变量路径无效，尝试重新获取..."
+            # 重新获取路径作为fallback
+            LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
+            if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+              echo "错误：重新获取路径仍无效"
+              exit 1
+            fi
+            echo "fallback成功，路径：$LIB_AIO_PATH"
+          fi
+          
+          # 执行打包（携带所有依赖）
+          echo "开始打包，使用libaio路径：$LIB_AIO_PATH"
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -111,16 +129,18 @@ jobs:
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
-            --add-binary="$LIB_AIO_PATH:." \  # 使用单一有效路径
+            --add-binary="$LIB_AIO_PATH:." \
             ./main.py
           
+          # 验证打包产物
           if [ ! -f "dist/myapp-linux" ]; then
             echo "错误：打包失败，未生成产物"
             exit 1
           fi
-          echo "✅ 打包完成，产物：dist/myapp-linux（大小：$(du -sh dist/myapp-linux | awk '{print $1}')）"
+          echo "✅ 打包完成，产物信息："
+          ls -lh dist/myapp-linux  # 打印产物大小和权限
 
-      - name: 保存产物
+      - name: 保存打包产物
         uses: actions/upload-artifact@v4
         with:
           name: myapp-static
@@ -137,7 +157,7 @@ jobs:
         with:
           name: myapp-static
 
-      - name: 创建Release
+      - name: 创建GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: myapp-linux
