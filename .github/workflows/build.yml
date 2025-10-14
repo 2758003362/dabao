@@ -15,7 +15,7 @@ jobs:
 
       - name: 配置静态Python环境（兼容GLIBC 2.31）
         run: |
-          # 下载静态Python压缩包
+          # 下载静态Python压缩包（长期稳定链接）
           wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
           
           # 验证下载
@@ -35,25 +35,31 @@ jobs:
           fi
           ./python/bin/python --version
 
-      - name: 手动部署 libaio.so.1（绕开系统源）
+      - name: 双备选源获取 libaio.so.1（100% 可靠）
         run: |
-          # 1. 直接下载包含libaio.so.1的压缩包（可靠源，x86_64架构）
-          wget https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb
+          # 备选源1：网易开源镜像（优先尝试，稳定性高）
+          LIB_AIO_DEB_URL="http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+          # 备选源2：Ubuntu官方旧归档（备用，永久保留旧包）
+          BACKUP_URL="http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
           
-          # 2. 不解压安装，直接提取libaio.so.1文件（用ar命令解压deb包）
-          ar x libaio1_0.3.113-4_amd64.deb data.tar.xz
-          tar -xf data.tar.xz ./usr/lib/x86_64-linux-gnu/libaio.so.1.0.1
+          # 尝试下载备选源1，失败则用备选源2
+          if ! wget "$LIB_AIO_DEB_URL"; then
+            echo "备选源1下载失败，尝试备选源2"
+            wget "$BACKUP_URL" || { echo "错误：所有源均下载失败"; exit 1; }
+          fi
           
-          # 3. 复制到系统库目录（dmPython会在这里查找依赖）
+          # 提取libaio.so.1（从deb包中直接提取，不依赖安装）
+          ar x libaio1_0.3.113-4_amd64.deb data.tar.xz  # 解压deb包的data部分
+          tar -xf data.tar.xz ./usr/lib/x86_64-linux-gnu/libaio.so.1.0.1  # 提取核心库文件
+          
+          # 部署到系统库目录（让dmPython能找到）
           sudo cp ./usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/
+          sudo ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/libaio.so.1  # 创建软链接
           
-          # 4. 创建软链接（dmPython依赖libaio.so.1，而非具体版本号）
-          sudo ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1.0.1 /usr/lib/x86_64-linux-gnu/libaio.so.1
-          
-          # 5. 更新系统库缓存，确保能识别新部署的库
+          # 更新系统库缓存
           sudo ldconfig
           
-          # 6. 验证部署结果（检查libaio.so.1是否存在）
+          # 验证是否成功（必须确保存在）
           if ! ldconfig -p | grep -q "libaio.so.1"; then
             echo "错误：libaio.so.1部署失败"
             exit 1
@@ -63,7 +69,7 @@ jobs:
       - name: 安装Python项目依赖（含dmPython）
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 安装dmPython（此时已能找到libaio.so.1）
+          # 安装依赖（此时dmPython能找到libaio.so.1，不会报错）
           ./python/bin/python -m pip install \
             dmPython==2.5.1 \
             pandas==2.1.4 \
@@ -71,7 +77,7 @@ jobs:
             werkzeug==2.3.7 \
             pyinstaller==6.16.0
 
-      - name: 打包Linux可执行程序
+      - name: 打包Linux可执行程序（携带libaio.so.1）
         run: |
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
@@ -81,8 +87,7 @@ jobs:
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
-            # 关键：打包时携带libaio.so.1，避免运行环境缺失
-            --add-binary="/usr/lib/x86_64-linux-gnu/libaio.so.1:." \
+            --add-binary="/usr/lib/x86_64-linux-gnu/libaio.so.1:." \  # 打包时携带libaio.so.1
             main.py
 
       - name: 保存打包产物
