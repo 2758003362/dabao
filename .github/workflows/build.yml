@@ -3,101 +3,130 @@ name: 达梦API服务打包（兼容GLIBC 2.31）
 on:
   push:
     tags:
-      - 'v*.*.*'
-  workflow_dispatch:
+      - 'v*.*.*'  # 推送标签（如v1.0.37）时触发构建
+  workflow_dispatch:  # 允许手动触发，方便测试与调试
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # 使用最新版Ubuntu，减少排队时间
     steps:
+      # 步骤1：检出仓库代码
       - name: 检出仓库代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4  # 拉取当前仓库的最新代码
 
-      - name: 配置静态Python环境（兼容GLIBC 2.31）
+      # 步骤2：配置静态Python环境（兼容GLIBC 2.31，避免系统依赖问题）
+      - name: 下载并配置静态Python
         run: |
+          # 下载独立于系统的静态Python压缩包（长期稳定链接）
           wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
           
+          # 验证Python压缩包是否下载成功
           if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
-            echo "错误：Python压缩包下载失败"
+            echo "错误：Python压缩包下载失败，请检查网络"
             exit 1
           fi
           
+          # 创建Python目录并解压（--strip-components=1移除顶层目录，简化路径）
           mkdir -p python
           tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
+          # 验证Python环境是否可用（检查版本）
           if [ ! -f "./python/bin/python" ]; then
-            echo "错误：Python解压失败"
+            echo "错误：Python解压失败，未找到可执行文件"
             exit 1
           fi
-          ./python/bin/python --version
+          echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
 
-      - name: 直接通过系统包管理器安装libaio1（最可靠方式）
+      # 步骤3：启用Universe组件并安装libaio1（核心修复：解决「无安装候选」问题）
+      - name: 启用Universe组件+安装libaio1
         run: |
-          # 更新包索引
-          sudo apt-get update -y
+          # 1. 启用Ubuntu的Universe组件（libaio1位于该组件，默认未启用）
+          sudo add-apt-repository universe -y  # -y自动确认，避免交互
           
-          # 直接安装libaio1（系统会自动选择可用版本，确保包含libaio.so.1）
+          # 2. 强制更新源列表（确保获取到Universe组件的包信息）
+          sudo apt-get update -y --fix-missing  # --fix-missing修复缺失的源文件
+          
+          # 3. 安装libaio1（此时系统能找到安装候选，不会报错）
           if ! sudo apt-get install -y libaio1; then
-            echo "错误：系统包管理器安装libaio1失败"
+            echo "错误：libaio1安装失败，当前源列表如下："
+            cat /etc/apt/sources.list  # 打印源列表，方便排查问题
             exit 1
           fi
           
-          # 验证libaio.so.1是否存在
+          # 4. 验证libaio.so.1是否安装成功（确保依赖有效）
           if ! ldconfig -p | grep -q "libaio.so.1"; then
-            echo "错误：安装后未找到libaio.so.1"
+            echo "错误：安装后未找到libaio.so.1，依赖无效"
             exit 1
           fi
           
-          # 显示安装路径，确认存在
-          echo "✅ libaio1安装成功，路径：$(ldconfig -p | grep "libaio.so.1" | awk '{print $4}')"
+          # 5. 打印安装路径，确认依赖位置
+          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | awk '{print $4}')
+          echo "✅ libaio1安装成功，路径：$LIB_AIO_PATH"
 
-      - name: 安装Python依赖（含dmPython）
+      # 步骤4：安装Python项目依赖（含达梦驱动dmPython）
+      - name: 安装Python依赖包
         run: |
+          # 升级pip到最新版，减少依赖安装错误
           ./python/bin/python -m pip install --upgrade pip
+          
+          # 安装指定版本的依赖（确保稳定性与兼容性）
           ./python/bin/python -m pip install \
-            dmPython==2.5.1 \
-            pandas==2.1.4 \
-            flask==2.3.3 \
-            werkzeug==2.3.7 \
-            pyinstaller==6.16.0
+            dmPython==2.5.1 \          # 达梦数据库Python驱动（依赖libaio.so.1）
+            pandas==2.1.4 \           # 数据处理库
+            flask==2.3.3 \             # Web框架
+            werkzeug==2.3.7 \          # Flask依赖的WSGI工具（避免版本冲突）
+            pyinstaller==6.16.0        # 打包工具（生成单文件可执行程序）
+          
+          echo "✅ Python依赖安装完成"
 
-      - name: 打包Linux可执行程序（携带libaio.so.1）
+      # 步骤5：用PyInstaller打包成单文件可执行程序（携带libaio.so.1）
+      - name: 打包Linux可执行程序
         run: |
-          # 找到libaio.so.1的实际路径
+          # 获取libaio.so.1的实际安装路径（用于打包携带）
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | awk '{print $4}')
           
+          # 打包命令：强制包含所有依赖，避免运行时缺失
           ./python/bin/pyinstaller --onefile --name myapp-linux \
-            --paths=./python/lib/python3.11/site-packages \
-            --hidden-import=flask \
-            --hidden-import=dmPython \
-            --hidden-import=dmPython.dbapi2 \
-            --hidden-import=pandas \
-            --hidden-import=pandas.core \
-            --hidden-import=pandas.io \
-            --add-binary="$LIB_AIO_PATH:." \  # 携带系统安装的libaio库
-            main.py
+            --paths=./python/lib/python3.11/site-packages \  # 指定Python依赖路径
+            --hidden-import=flask \                        # 强制包含Flask核心模块
+            --hidden-import=dmPython \                     # 强制包含达梦驱动
+            --hidden-import=dmPython.dbapi2 \              # dmPython隐藏依赖（易遗漏）
+            --hidden-import=pandas \                       # 强制包含pandas
+            --hidden-import=pandas.core \                  # pandas核心子模块
+            --hidden-import=pandas.io \                    # pandas IO子模块（处理数据读写）
+            --add-binary="$LIB_AIO_PATH:." \               # 携带libaio.so.1到产物中
+            main.py  # 项目入口文件（Flask服务主程序）
+          
+          # 验证打包产物是否存在
+          if [ ! -f "dist/myapp-linux" ]; then
+            echo "错误：打包失败，未生成可执行文件"
+            exit 1
+          fi
+          echo "✅ 打包完成，产物信息：$(ls -lh dist/myapp-linux)"
 
+      # 步骤6：上传打包产物到GitHub Artifacts（便于下载）
       - name: 保存打包产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-static
-          path: dist/myapp-linux
-          retention-days: 7
+          name: myapp-static  # 产物名称（下载时显示）
+          path: dist/myapp-linux  # 产物路径（PyInstaller默认输出到dist目录）
+          retention-days: 7  # 产物保留7天（可根据需求调整）
 
+  # 步骤7：创建GitHub Release（仅推送标签时执行，便于分发）
   release:
-    needs: build-linux
+    needs: build-linux  # 依赖build-linux任务成功后才执行
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/')  # 仅当推送标签时触发
     steps:
       - name: 下载打包产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-static
+          name: myapp-static  # 对应步骤6的产物名称
 
-      - name: 创建GitHub Release
+      - name: 创建GitHub Release并上传产物
         uses: softprops/action-gh-release@v2
         with:
-          files: myapp-linux
-          generate_release_notes: true
+          files: myapp-linux  # 上传到Release的文件
+          generate_release_notes: true  # 自动生成Release说明（含提交记录）
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub自动提供的令牌，无需手动配置
