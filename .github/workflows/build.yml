@@ -105,7 +105,7 @@ jobs:
           echo "Python路径: $PYTHON_BIN"
           echo "Python版本: $("$PYTHON_BIN" --version 2>&1)"
 
-      - name: 编译静态libaio（musl适配）
+      - name: 编译静态libaio（修复find命令语法）
         run: |
           # 1. 下载libaio源码（稳定链接，长期可用）
           wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
@@ -119,11 +119,10 @@ jobs:
           sed -i "s|^CFLAGS\s*=.*$|CFLAGS = -fPIC -static -I/usr/include -D_GNU_SOURCE -Wall|" src/Makefile  # 静态编译参数
           sed -i "s|^LDFLAGS\s*=.*$|LDFLAGS = -static|" src/Makefile  # 静态链接
           
-          # 3. 移除glibc特有头文件依赖（musl无bits/wordsize.h）
+          # 3. 修复find命令语法：-exec以\;正确终止，避免参数缺失错误
           echo "移除libaio源码中的glibc依赖..."
-          find src/ -name "*.c" -exec sed -i \
-            -e '/#include <bits\/wordsize.h>/d' \  # 删除glibc特有头文件引用
-            -e '1i #define __WORDSIZE 64' {} \;   # 手动定义64位字长
+          # 正确写法：多个-e选项合并，-exec用\;终止，无多余反斜杠
+          find src/ -name "*.c" -exec sed -i -e '/#include <bits\/wordsize.h>/d' -e '1i #define __WORDSIZE 64' {} \;
           
           # 4. 复制libaio头文件到系统目录（编译dmPython时会搜索）
           sudo cp src/libaio.h /usr/include/
