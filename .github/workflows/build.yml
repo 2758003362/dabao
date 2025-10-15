@@ -142,53 +142,102 @@ jobs:
           fi
           echo "✅ 所有依赖安装完成"
 
-      - name: 准备兼容的libstdc++
+      - name: 准备兼容的libstdc++（修复下载与解压错误）
         run: |
-          # 下载兼容GLIBC 2.31的libstdc++6
-          wget -q https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-12/libstdc++6_12.3.0-1ubuntu1_amd64.deb
-          if [ ! -f "libstdc++6_12.3.0-1ubuntu1_amd64.deb" ]; then
-            echo "错误：libstdc++6下载失败"
+          # 核心优化1：多源+非静默下载，显示详细日志；增加重试机制
+          LIBSTDC_URLS=(
+            "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libstdc++6_12.3.0-1ubuntu1_amd64.deb"  # 官方源（优先）
+            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-12/libstdc++6_12.3.0-1ubuntu1_amd64.deb"  # 清华源（稳定）
+            "https://mirrors.ustc.edu.cn/ubuntu/pool/main/g/gcc-12/libstdc++6_12.3.0-1ubuntu1_amd64.deb"  # 中科大源（备用）
+          )
+          
+          # 初始化下载状态
+          DOWNLOAD_SUCCESS=0
+          for url in "${LIBSTDC_URLS[@]}"; do
+            echo "=== 尝试从 $url 下载libstdc++6 ==="
+            # 去掉-q（静默模式），显示下载进度；--tries=3重试3次；--timeout=30超时30秒
+            if wget --tries=3 --timeout=30 -O libstdc++6.deb "$url"; then
+              echo "✅ libstdc++6.deb下载成功"
+              DOWNLOAD_SUCCESS=1
+              break
+            else
+              echo "⚠️ 该源下载失败，尝试下一个"
+              # 删除可能的不完整文件，避免后续校验错误
+              rm -f libstdc++6.deb
+            fi
+          done
+          
+          # 检查下载结果
+          if [ "$DOWNLOAD_SUCCESS" -ne 1 ] || [ ! -f "libstdc++6.deb" ]; then
+            echo "❌ 错误：所有源均下载失败，无法获取libstdc++6.deb"
             exit 1
           fi
           
-          # 创建解压目录
+          # 核心优化2：验证deb包完整性（避免下载到404页面或损坏文件）
+          echo "=== 验证deb包完整性 ==="
+          if ! dpkg-deb --info libstdc++6.deb &> /dev/null; then
+            echo "❌ 错误：下载的文件不是有效deb包（可能是404页面或损坏）"
+            # 打印文件前100字节，辅助排查（是否为HTML页面）
+            echo "文件前100字节内容："
+            head -c 100 libstdc++6.deb | xxd
+            exit 1
+          fi
+          echo "✅ deb包完整性验证通过"
+          
+          # 核心优化3：清理旧目录，避免残留文件干扰
+          rm -rf libstdc++_extract data.tar.xz
           mkdir -p libstdc++_extract
           
-          # 解压deb包获取libstdc++.so.6
-          echo "开始解压deb包..."
-          if ! ar x libstdc++6_12.3.0-1ubuntu1_amd64.deb data.tar.xz; then
-            echo "错误：无法提取data.tar.xz"
+          # 提取data.tar.xz（增加错误提示）
+          echo "=== 提取deb包中的data.tar.xz ==="
+          if ! ar x libstdc++6.deb data.tar.xz; then
+            echo "❌ 错误：无法从deb包提取data.tar.xz（可能包损坏）"
+            # 查看deb包内的文件列表，确认是否有data.tar.xz
+            echo "deb包内文件列表："
+            ar t libstdc++6.deb
             exit 1
           fi
           
+          # 验证data.tar.xz存在
           if [ ! -f "data.tar.xz" ]; then
-            echo "错误：data.tar.xz不存在"
+            echo "❌ 错误：提取后未找到data.tar.xz"
             exit 1
           fi
           
-          echo "解压libstdc++.so.6..."
-          if ! tar -xf data.tar.xz -C libstdc++_extract ./usr/lib/x86_64-linux-gnu/libstdc++.so.6; then
-            echo "错误：解压libstdc++.so.6失败"
+          # 解压data.tar.xz（指定解压格式，增加兼容性）
+          echo "=== 解压data.tar.xz获取libstdc++.so.6 ==="
+          # 显式指定xz格式，避免tar自动识别失败；增加-v显示详细过程
+          if ! tar -xJf data.tar.xz -C libstdc++_extract ./usr/lib/x86_64-linux-gnu/libstdc++.so.6 -v; then
+            echo "❌ 错误：解压libstdc++.so.6失败"
+            # 查看data.tar.xz内的目标文件路径，确认是否存在
+            echo "data.tar.xz内的目标文件路径："
+            tar -tJf data.tar.xz | grep "usr/lib/x86_64-linux-gnu/libstdc++.so.6"
             exit 1
           fi
           
-          # 验证文件存在
-          if [ ! -f "libstdc++_extract/usr/lib/x86_64-linux-gnu/libstdc++.so.6" ]; then
-            echo "错误：libstdc++.so.6提取失败"
-            echo "解压目录内容："
+          # 验证目标文件存在
+          TARGET_LIB="libstdc++_extract/usr/lib/x86_64-linux-gnu/libstdc++.so.6"
+          if [ ! -f "$TARGET_LIB" ]; then
+            echo "❌ 错误：libstdc++.so.6提取失败"
+            echo "解压目录完整内容："
             find libstdc++_extract -type f
             exit 1
           fi
           
-          # 创建目标目录
+          # 创建目标目录并移动文件
           mkdir -p usr/lib/x86_64-linux-gnu
+          mv "$TARGET_LIB" usr/lib/x86_64-linux-gnu/
           
-          # 移动文件到标准位置
-          mv libstdc++_extract/usr/lib/x86_64-linux-gnu/libstdc++.so.6 usr/lib/x86_64-linux-gnu/
-          
-          # 验证libstdc++版本兼容性
-          echo "libstdc++.so.6 GLIBC要求："
-          objdump -p usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep -A 10 "Version References:" || true
+          # 验证libstdc++版本兼容性（确认支持GLIBC 2.31）
+          echo "=== 验证libstdc++ GLIBC兼容性 ==="
+          GLIBC_REQUIRE=$(objdump -p usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep -A 5 "GLIBC_" | head -10)
+          if echo "$GLIBC_REQUIRE" | grep -q "GLIBC_2.31"; then
+            echo "✅ 确认支持GLIBC 2.31，兼容性满足要求"
+          else
+            echo "⚠️ 警告：未检测到GLIBC_2.31支持，可能存在兼容性问题"
+            echo "当前libstdc++依赖的GLIBC版本："
+            echo "$GLIBC_REQUIRE"
+          fi
           
           echo "✅ 兼容的libstdc++.so.6准备完成"
 
@@ -212,7 +261,7 @@ jobs:
             echo "警告：环境变量路径无效，尝试重新获取..."
             # 重新获取路径作为fallback
             LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
-            if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB极速下载_AIO_PATH" ]; then
+            if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
               echo "错误：重新获取路径仍无效"
               exit 1
             fi
