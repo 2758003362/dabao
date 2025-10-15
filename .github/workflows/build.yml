@@ -15,13 +15,9 @@ jobs:
 
       - name: 配置静态Python环境
         run: |
-          # 1. 清理可能存在的旧文件
           rm -rf python cpython-*.tar.gz
-          
-          # 2. 使用更可靠的下载方式
           PYTHON_URL="https://github.com/indygreg/python-build-standalone/releases/download/20230726/cpython-3.10.12+20230726-x86_64-unknown-linux-gnu-install_only.tar.gz"
           
-          # 带重试机制的下载，并指定输出文件名
           for i in {1..3}; do
             echo "尝试第$i次下载Python包..."
             if wget --tries=3 --timeout=30 -O cpython-3.10.12.tar.gz "$PYTHON_URL"; then
@@ -32,26 +28,23 @@ jobs:
               sleep 5
             fi
             if [ $i -eq 3 ]; then
-              echo "❌ 错误：Python压缩包下载失败（3次重试均失败）"
+              echo "❌ 错误：Python压缩包下载失败"
               exit 1
             fi
           done
           
-          # 3. 验证下载文件完整性
           if [ ! -f "cpython-3.10.12.tar.gz" ]; then
             echo "❌ 错误：Python压缩包下载失败"
             exit 1
           fi
           
-          # 检查文件大小（应≈26.4MB）
           FILE_SIZE=$(wc -c < "cpython-3.10.12.tar.gz")
           echo "下载文件大小: $FILE_SIZE 字节"
           if [ "$FILE_SIZE" -lt 25000000 ]; then
-            echo "❌ 错误：下载文件不完整（大小: $FILE_SIZE）"
+            echo "❌ 错误：下载文件不完整"
             exit 1
           fi
           
-          # 4. 使用更健壮的解压命令
           mkdir -p python
           echo "开始解压Python包..."
           if ! tar -xzf cpython-3.10.12.tar.gz \
@@ -59,36 +52,28 @@ jobs:
                --strip-components=1 \
                --exclude='__pycache__' \
                --exclude='*.pyc'; then
-            echo "❌ 错误：Python解压失败，可能原因："
-            echo "1. 下载文件损坏"
-            echo "2. 磁盘空间不足（当前剩余: $(df -h . | awk 'NR==2{print $4}')）"
-            echo "3. 权限问题（当前用户: $(whoami)）"
+            echo "❌ 错误：Python解压失败"
             exit 1
           fi
           
-          # 5. 双重验证解压结果
           if [ ! -f "./python/bin/python3.10" ]; then
             echo "❌ 错误：Python可执行文件不存在"
-            echo "解压目录内容："
             ls -la python/bin/
             exit 1
           fi
           
-          # 6. 创建python符号链接以便后续使用
           cd python/bin
           ln -sf python3.10 python
           cd ../..
           
           echo "✅ Python配置成功，版本：$(./python/bin/python --version)"
 
-      - name: 安装libaio1（写入环境变量，跨步骤共享）
+      - name: 安装libaio1（写入环境变量）
         run: |
-          # 多源下载libaio1.deb（确保成功）
           LIB_AIO_URLS=(
             "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
           )
           
           for url in "${LIB_AIO_URLS[@]}"; do
@@ -104,112 +89,97 @@ jobs:
             exit 1
           fi
           
-          # 强制安装（适配Ubuntu 24.04）
           sudo dpkg -i --force-depends libaio1.deb
           if ! dpkg -s libaio1 &> /dev/null; then
             echo "错误：libaio1安装失败"
             exit 1
           fi
           
-          # 关键：获取并验证libaio.so.1路径，写入环境变量
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
-          echo "获取到的libaio路径：[$LIB_AIO_PATH]"  # 括号显示是否有隐藏字符
+          echo "获取到的libaio路径：[$LIB_AIO_PATH]"
           
-          # 双重验证路径有效性
           if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "错误：获取的libaio路径无效（文件不存在）"
-            # 辅助排查：打印系统中的libaio文件
+            echo "错误：获取的libaio路径无效"
             ls -la /lib/x86_64-linux-gnu/ | grep libaio
             exit 1
           fi
           
-          # 写入GitHub环境变量，供后续步骤使用
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          echo "✅ libaio1安装成功，路径已写入环境变量"
+          echo "✅ libaio1安装成功"
 
       - name: 安装Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 固定依赖版本，避免兼容性问题
           ./python/bin/python -m pip install dmPython==2.5.22 pandas==2.1.4 flask==2.3.3 werkzeug==2.3.7 pyinstaller==6.16.0
           
-          # 验证dmPython能否正常导入（核心依赖）
           if ./python/bin/python -c "import dmPython" &> /dev/null; then
             echo "✅ dmPython安装成功"
           else
-            echo "错误：dmPython安装失败（可能是libaio依赖问题）"
+            echo "错误：dmPython安装失败"
             exit 1
           fi
           echo "✅ 所有依赖安装完成"
 
-      - name: 准备兼容的libstdc++（修复下载与解压错误）
+      - name: 准备兼容的libstdc++（修复404错误，使用旧版本仓库）
         run: |
-          # 核心优化1：多源+非静默下载，显示详细日志；增加重试机制
+          # 核心修复：使用仍存在于仓库中的libstdc++6版本（12.1.0-2ubuntu1）
+          # 该版本明确支持GLIBC 2.31，且存储在旧版本专用仓库
           LIBSTDC_URLS=(
-            "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libstdc++6_12.3.0-1ubuntu1_amd64.deb"  # 官方源（优先）
-            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-12/libstdc++6_12.3.0-1ubuntu1_amd64.deb"  # 清华源（稳定）
-            "https://mirrors.ustc.edu.cn/ubuntu/pool/main/g/gcc-12/libstdc++6_12.3.0-1ubuntu1_amd64.deb"  # 中科大源（备用）
+            "http://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-12/libstdc++6_12.1.0-2ubuntu1_amd64.deb"  # 旧版本专用仓库（优先）
+            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-12/libstdc++6_12.1.0-2ubuntu1_amd64.deb"  # 清华源备份
+            "https://mirrors.ustc.edu.cn/ubuntu/pool/main/g/gcc-12/libstdc++6_12.1.0-2ubuntu1_amd64.deb"  # 中科大源备份
           )
           
-          # 初始化下载状态
+          # 下载逻辑（保留重试和日志）
           DOWNLOAD_SUCCESS=0
           for url in "${LIBSTDC_URLS[@]}"; do
             echo "=== 尝试从 $url 下载libstdc++6 ==="
-            # 去掉-q（静默模式），显示下载进度；--tries=3重试3次；--timeout=30超时30秒
             if wget --tries=3 --timeout=30 -O libstdc++6.deb "$url"; then
               echo "✅ libstdc++6.deb下载成功"
               DOWNLOAD_SUCCESS=1
               break
             else
               echo "⚠️ 该源下载失败，尝试下一个"
-              # 删除可能的不完整文件，避免后续校验错误
               rm -f libstdc++6.deb
             fi
           done
           
-          # 检查下载结果
           if [ "$DOWNLOAD_SUCCESS" -ne 1 ] || [ ! -f "libstdc++6.deb" ]; then
             echo "❌ 错误：所有源均下载失败，无法获取libstdc++6.deb"
             exit 1
           fi
           
-          # 核心优化2：验证deb包完整性（避免下载到404页面或损坏文件）
+          # 验证deb包完整性
           echo "=== 验证deb包完整性 ==="
           if ! dpkg-deb --info libstdc++6.deb &> /dev/null; then
-            echo "❌ 错误：下载的文件不是有效deb包（可能是404页面或损坏）"
-            # 打印文件前100字节，辅助排查（是否为HTML页面）
+            echo "❌ 错误：下载的文件不是有效deb包"
             echo "文件前100字节内容："
             head -c 100 libstdc++6.deb | xxd
             exit 1
           fi
           echo "✅ deb包完整性验证通过"
           
-          # 核心优化3：清理旧目录，避免残留文件干扰
+          # 清理旧目录并提取文件
           rm -rf libstdc++_extract data.tar.xz
           mkdir -p libstdc++_extract
           
-          # 提取data.tar.xz（增加错误提示）
           echo "=== 提取deb包中的data.tar.xz ==="
           if ! ar x libstdc++6.deb data.tar.xz; then
-            echo "❌ 错误：无法从deb包提取data.tar.xz（可能包损坏）"
-            # 查看deb包内的文件列表，确认是否有data.tar.xz
+            echo "❌ 错误：无法从deb包提取data.tar.xz"
             echo "deb包内文件列表："
             ar t libstdc++6.deb
             exit 1
           fi
           
-          # 验证data.tar.xz存在
           if [ ! -f "data.tar.xz" ]; then
             echo "❌ 错误：提取后未找到data.tar.xz"
             exit 1
           fi
           
-          # 解压data.tar.xz（指定解压格式，增加兼容性）
+          # 解压获取libstdc++.so.6
           echo "=== 解压data.tar.xz获取libstdc++.so.6 ==="
-          # 显式指定xz格式，避免tar自动识别失败；增加-v显示详细过程
           if ! tar -xJf data.tar.xz -C libstdc++_extract ./usr/lib/x86_64-linux-gnu/libstdc++.so.6 -v; then
             echo "❌ 错误：解压libstdc++.so.6失败"
-            # 查看data.tar.xz内的目标文件路径，确认是否存在
             echo "data.tar.xz内的目标文件路径："
             tar -tJf data.tar.xz | grep "usr/lib/x86_64-linux-gnu/libstdc++.so.6"
             exit 1
@@ -219,22 +189,20 @@ jobs:
           TARGET_LIB="libstdc++_extract/usr/lib/x86_64-linux-gnu/libstdc++.so.6"
           if [ ! -f "$TARGET_LIB" ]; then
             echo "❌ 错误：libstdc++.so.6提取失败"
-            echo "解压目录完整内容："
             find libstdc++_extract -type f
             exit 1
           fi
           
-          # 创建目标目录并移动文件
+          # 移动文件并验证兼容性
           mkdir -p usr/lib/x86_64-linux-gnu
           mv "$TARGET_LIB" usr/lib/x86_64-linux-gnu/
           
-          # 验证libstdc++版本兼容性（确认支持GLIBC 2.31）
           echo "=== 验证libstdc++ GLIBC兼容性 ==="
           GLIBC_REQUIRE=$(objdump -p usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep -A 5 "GLIBC_" | head -10)
           if echo "$GLIBC_REQUIRE" | grep -q "GLIBC_2.31"; then
             echo "✅ 确认支持GLIBC 2.31，兼容性满足要求"
           else
-            echo "⚠️ 警告：未检测到GLIBC_2.31支持，可能存在兼容性问题"
+            echo "⚠️ 警告：未检测到GLIBC_2.31支持"
             echo "当前libstdc++依赖的GLIBC版本："
             echo "$GLIBC_REQUIRE"
           fi
@@ -243,7 +211,6 @@ jobs:
 
       - name: 打包应用（兼容GLIBC 2.31）
         run: |
-          # 验证入口脚本存在
           echo "当前目录文件列表："
           ls -la
           if [ ! -f "./main.py" ]; then
@@ -252,14 +219,11 @@ jobs:
           fi
           echo "✅ 确认main.py存在"
           
-          # 从环境变量获取libaio路径，带fallback机制
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           echo "从环境变量获取的libaio路径：[$LIB_AIO_PATH]"
           
-          # 二次验证，防止环境变量传递失败
           if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
             echo "警告：环境变量路径无效，尝试重新获取..."
-            # 重新获取路径作为fallback
             LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
             if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
               echo "错误：重新获取路径仍无效"
@@ -268,12 +232,9 @@ jobs:
             echo "fallback成功，路径：$LIB_AIO_PATH"
           fi
           
-          # 设置链接器选项，解决memcpy/memmove符号问题
           export LDFLAGS="-Wl,--wrap=memcpy -Wl,--wrap=memmove"
           echo "设置链接器选项：$LDFLAGS"
           
-          # 执行打包（携带所有依赖和兼容的libstdc++）
-          echo "开始打包，使用libaio路径：$LIB_AIO_PATH"
           ./python/bin/python -m PyInstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.10/site-packages \
             --hidden-import=flask \
@@ -289,18 +250,16 @@ jobs:
             --noconfirm \
             ./main.py
           
-          # 验证打包产物
           if [ ! -f "dist/myapp-linux" ]; then
             echo "错误：打包失败，未生成产物"
             exit 1
           fi
           
-          # 检查产物的GLIBC依赖
           echo "检查产物的GLIBC依赖："
           objdump -p dist/myapp-linux | grep -A 10 "Version References:" || true
           
           echo "✅ 打包完成，产物信息："
-          ls -lh dist/myapp-linux  # 打印产物大小和权限
+          ls -lh dist/myapp-linux
 
       - name: 保存打包产物
         uses: actions/upload-artifact@v4
