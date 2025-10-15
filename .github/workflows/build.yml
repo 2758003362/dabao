@@ -30,6 +30,7 @@ jobs:
             exit 1
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
+
       - name: 安装libaio1（写入环境变量，跨步骤共享）
         run: |
           # 多源下载libaio1.deb（确保成功）
@@ -75,6 +76,7 @@ jobs:
           # 写入GitHub环境变量，供后续步骤使用
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
           echo "✅ libaio1安装成功，路径已写入环境变量"
+
       - name: 安装Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
@@ -89,6 +91,7 @@ jobs:
             exit 1
           fi
           echo "✅ 所有依赖安装完成"
+
       - name: 打包应用（最终稳定版）
         run: |
           # 验证入口脚本存在
@@ -116,6 +119,10 @@ jobs:
             echo "fallback成功，路径：$LIB_AIO_PATH"
           fi
           
+          # 设置GLIBC兼容性环境变量
+          export GLIBC_COMPAT_VER=2.31
+          echo "设置GLIBC兼容版本：$GLIBC_COMPAT_VER"
+          
           # 执行打包（携带所有依赖）
           echo "开始打包，使用libaio路径：$LIB_AIO_PATH"
           ./python/bin/pyinstaller --onefile --name myapp-linux \
@@ -127,6 +134,7 @@ jobs:
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
+            --runtime-tmpdir=. \
             ./main.py
           
           # 验证打包产物
@@ -134,8 +142,14 @@ jobs:
             echo "错误：打包失败，未生成产物"
             exit 1
           fi
+          
+          # 检查产物的GLIBC依赖
+          echo "检查产物的GLIBC依赖："
+          ldd dist/myapp-linux | grep libc || true
+          
           echo "✅ 打包完成，产物信息："
           ls -lh dist/myapp-linux  # 打印产物大小和权限
+
       - name: 保存打包产物
         uses: actions/upload-artifact@v4
         with:
