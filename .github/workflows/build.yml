@@ -13,122 +13,148 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置低GLIBC兼容的静态Python环境（修复大小误判）
+      - name: 配置低GLIBC兼容的静态Python环境
         run: |
-          # 1. 替换为有效链接，移除404版本，补充2024年稳定版
           PYTHON_URLS=(
-            "https://github.com/astral-sh/python-build-standalone/releases/download/20240224/cpython-3.10.13+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz"  # 实际约27MB
-            "https://github.com/astral-sh/python-build-standalone/releases/download/20240506/cpython-3.11.9+20240506-x86_64-unknown-linux-gnu-install_only.tar.gz"  # 实际约28MB
-            "https://github.com/astral-sh/python-build-standalone/releases/download/20240224/cpython-3.9.19+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz"   # 实际约26MB
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20240224/cpython-3.10.13+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz"
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20240506/cpython-3.11.9+20240506-x86_64-unknown-linux-gnu-install_only.tar.gz"
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20240224/cpython-3.9.19+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz"
           )
           
           filename=""
-          # 2. 修正校验逻辑：降低大小阈值，保留类型校验
           for url in "${PYTHON_URLS[@]}"; do
             current_filename=$(basename "$url")
-            echo "=== 尝试下载: $url ==="
-            rm -f "$current_filename"  # 清理旧文件
+            echo "=== 尝试下载Python: $url ==="
+            rm -f "$current_filename"
             
-            # 详细下载日志，便于排查网络问题
             if wget -v --timeout=30 --tries=5 "$url" -O "$current_filename"; then
-              # 验证1：文件大小（≥25MB，匹配实际静态Python包大小）
               file_size=$(du -m "$current_filename" | cut -f1)
               if [ "$file_size" -lt 25 ]; then
-                echo "警告：文件过小（$file_size MB），可能是错误页面"
-                head -n 10 "$current_filename"  # 输出前10行确认是否为HTML
+                echo "警告：文件过小，跳过"
                 rm -f "$current_filename"
                 continue
               fi
               
-              # 验证2：文件类型（必须是gzip压缩包，排除文本/HTML）
               file_type=$(file "$current_filename" | grep -i "gzip compressed data")
               if [ -z "$file_type" ]; then
-                echo "警告：文件不是有效的gzip压缩包，跳过"
+                echo "警告：非gzip包，跳过"
                 rm -f "$current_filename"
                 continue
               fi
               
-              # 双校验通过，确认下载成功
-              echo "✅ 下载成功！文件大小：$file_size MB，类型：$file_type"
+              echo "✅ Python下载成功（$file_size MB）"
               filename="$current_filename"
               break
             fi
-            echo "❌ 该链接下载失败，尝试下一个"
+            echo "❌ 该链接失败，尝试下一个"
           done
           
-          # 3. 确认下载结果，失败则终止
-          if [ -z "$filename" ] || [ ! -f "$filename" ]; then
-            echo "错误：所有Python压缩包下载/校验失败，请检查网络或链接"
+          if [ -z "$filename" ]; then
+            echo "错误：Python下载失败"
             exit 1
           fi
           
-          # 4. 解压（保持之前的兼容参数）
-          echo "=== 开始解压Python压缩包: $filename ==="
+          echo "=== 解压Python ==="
           mkdir -p python
           if ! tar -xzvf "$filename" -C python --strip-components=1 --warning=no-unknown-keyword --overwrite; then
-            echo "错误：tar解压失败！"
-            ls -la  # 输出目录文件，辅助排查
-            ls -la python 2>/dev/null || true
+            echo "错误：Python解压失败"
             exit 1
           fi
           
-          # 5. 验证Python核心文件
-          echo "=== 验证Python安装结果 ==="
           if [ ! -f "./python/bin/python" ]; then
-            echo "错误：未找到关键文件 ./python/bin/python"
-            find python -type f | head -20  # 显示目录结构，定位问题
+            echo "错误：未找到python可执行文件"
             exit 1
           fi
           
-          # 6. 确认版本与GLIBC兼容性
           python_version=$(./python/bin/python --version 2>&1)
-          echo "✅ 静态Python配置完成！版本：$python_version"
-          echo "=== Python的GLIBC依赖检查 ==="
-          ldd ./python/bin/python | grep libc || echo "✅ 静态编译Python，无额外libc依赖"
+          echo "✅ Python配置完成：$python_version"
 
-      - name: 安装libaio1（达梦依赖）
+      - name: 安装libaio1（修复包损坏问题）
         run: |
-          LIB_AIO_URLS=(
-            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-          )
-          
-          for url in "${LIB_AIO_URLS[@]}"; do
-            echo "尝试从 $url 下载libaio1..."
-            if wget -q "$url" -O libaio1.deb; then
-              echo "✅ libaio1下载成功"
-              break
+          # 方案1：优先尝试apt安装（最可靠，自动处理完整性）
+          echo "=== 优先尝试apt安装libaio1 ==="
+          if sudo apt-get update && sudo apt-get install -y libaio1; then
+            echo "✅ apt安装libaio1成功"
+          else
+            echo "⚠️ apt安装失败，尝试手动下载deb包"
+            # 方案2：手动下载，更换可靠源+完整性校验
+            LIB_AIO_URLS=(
+              "http://security.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"  # Ubuntu安全源（最稳定）
+              "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"  # 清华源
+              "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"  # 网易源
+              "https://mirror.sjtu.edu.cn/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"  # 上海交大源
+            )
+            
+            deb_downloaded=false
+            for url in "${LIB_AIO_URLS[@]}"; do
+              echo "=== 尝试下载libaio1: $url ==="
+              rm -f libaio1.deb  # 清理旧文件
+              
+              # 下载并显示进度（便于排查是否中断）
+              if wget --progress=bar:force "$url" -O libaio1.deb; then
+                # 校验1：文件大小（正常约10KB，过小则损坏）
+                file_size=$(du -k libaio1.deb | cut -f1)
+                if [ "$file_size" -lt 10 ]; then
+                  echo "警告：deb包过小（$file_size KB），视为损坏"
+                  continue
+                fi
+                
+                # 校验2：deb包有效性（用dpkg-deb检查是否完整）
+                if dpkg-deb --info libaio1.deb &> /dev/null; then
+                  echo "✅ libaio1.deb下载并校验成功"
+                  deb_downloaded=true
+                  break
+                else
+                  echo "警告：deb包无效，跳过"
+                  rm -f libaio1.deb
+                fi
+              fi
+              echo "❌ 该链接下载失败"
+            done
+            
+            # 检查手动下载结果
+            if [ "$deb_downloaded" = false ] || [ ! -f "libaio1.deb" ]; then
+              echo "错误：所有libaio1下载方式均失败"
+              exit 1
             fi
-          done
-          
-          if [ ! -f "libaio1.deb" ]; then
-            echo "错误：所有libaio1源均下载失败"
-            exit 1
+            
+            # 安装校验后的deb包
+            echo "=== 安装手动下载的libaio1.deb ==="
+            if ! sudo dpkg -i libaio1.deb; then
+              # 尝试修复依赖（若有依赖问题）
+              echo "尝试修复依赖并重新安装..."
+              sudo apt-get -f install -y
+              if ! sudo dpkg -i libaio1.deb; then
+                echo "错误：libaio1.deb安装失败"
+                exit 1
+              fi
+            fi
           fi
           
-          sudo dpkg -i --force-depends libaio1.deb
+          # 验证安装结果+获取路径
+          echo "=== 验证libaio1安装 ==="
           if ! dpkg -s libaio1 &> /dev/null; then
-            echo "错误：libaio1安装失败"
+            echo "错误：libaio1安装后未检测到"
             exit 1
           fi
           
-          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
+          # 获取libaio.so.1路径（兼容不同系统位置）
+          LIB_AIO_PATH=$(find /lib/x86_64-linux-gnu/ /usr/lib/x86_64-linux-gnu/ -name "libaio.so.1" | head -n 1)
           echo "获取到的libaio路径：[$LIB_AIO_PATH]"
           
           if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "错误：获取的libaio路径无效"
-            ls -la /lib/x86_64-linux-gnu/ | grep libaio
+            echo "错误：未找到libaio.so.1文件"
+            ls -la /lib/x86_64-linux-gnu/ | grep libaio  # 辅助排查
             exit 1
           fi
           
+          # 写入环境变量供后续使用
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          echo "✅ libaio1安装成功"
+          echo "✅ libaio1安装完成，路径已保存"
 
-      - name: 安装兼容低GLIBC的Python依赖
+      - name: 安装Python依赖
         run: |
-          # 升级pip到稳定版本，避免依赖冲突
           ./python/bin/python -m pip install --upgrade pip==23.3.1
-          # 固定依赖版本，确保兼容GLIBC 2.31
           ./python/bin/python -m pip install \
             dmPython==2.5.22 \
             pandas==1.5.3 \
@@ -136,81 +162,64 @@ jobs:
             werkzeug==2.2.3 \
             pyinstaller==5.13.2
           
-          # 验证核心依赖是否正常导入
-          echo "=== 验证依赖安装结果 ==="
-          if ./python/bin/python -c "import dmPython; import pandas; import flask" &> /dev/null; then
-            echo "✅ 所有核心依赖（dmPython/pandas/flask）安装成功"
+          # 验证dmPython（核心依赖）
+          if ./python/bin/python -c "import dmPython" &> /dev/null; then
+            echo "✅ dmPython导入成功"
           else
-            echo "错误：核心依赖导入失败"
-            # 检查dmPython的GLIBC依赖，辅助排查
-            ldd $(find ./python -name "dmPython.*.so") | grep libc || true
+            echo "错误：dmPython导入失败（可能是libaio依赖问题）"
             exit 1
           fi
+          echo "✅ 所有依赖安装完成"
 
-      - name: 打包应用（强制低GLIBC兼容）
+      - name: 打包应用
         run: |
-          # 确认入口脚本存在
           if [ ! -f "./main.py" ]; then
-            echo "错误：未找到入口脚本 main.py"
+            echo "错误：未找到入口脚本main.py"
             exit 1
           fi
-          echo "✅ 确认入口脚本 main.py 存在"
           
-          # 获取libaio路径，增加fallback机制
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
-          echo "从环境变量获取的libaio路径：[$LIB_AIO_PATH]"
+          echo "使用libaio路径：$LIB_AIO_PATH"
           
-          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "警告：环境变量路径无效，尝试重新获取..."
-            LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
-            if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-              echo "错误：重新获取路径仍无效"
-              exit 1
-            fi
-            echo "✅ Fallback成功，路径：$LIB_AIO_PATH"
-          fi
+          # 打包（适配Python 3.10/3.11/3.9路径）
+          python_lib_path=$(find ./python/lib -name "python3.*" -type d | head -n 1)/site-packages
+          echo "Python依赖路径：$python_lib_path"
           
-          # 执行打包，关键参数确保兼容性
-          echo "=== 开始打包应用 ==="
           ./python/bin/pyinstaller --onefile --name myapp-linux \
-            --paths=./python/lib/python3.10/site-packages \  # 适配Python 3.10路径（根据实际版本调整）
+            --paths="$python_lib_path" \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
-            --add-binary="$LIB_AIO_PATH:." \  # 打包libaio到产物
+            --add-binary="$LIB_AIO_PATH:." \
             --runtime-tmpdir=. \
-            --strip \  # 移除调试符号，减少依赖
-            --exclude-module=ctypes \  # 排除高GLIBC依赖模块
+            --strip \
+            --exclude-module=ctypes \
             --exclude-module=distutils \
-            --no-compress \  # 禁用压缩，避免解压问题
+            --no-compress \
             ./main.py
           
-          # 验证打包产物
           if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：打包失败，未生成产物"
+            echo "错误：打包失败"
             exit 1
           fi
           
-          # 检查产物GLIBC依赖（核心验证步骤）
+          # 检查GLIBC依赖
           echo "==== 产物GLIBC依赖检查 ===="
-          # 仅显示≤2.31的依赖，过滤高版本
           objdump -T dist/myapp-linux | grep GLIBC_ | sort -u | grep -v GLIBC_2.3[2-9] | grep -v GLIBC_2.[4-9]
           
-          # 警告高版本依赖
           if objdump -T dist/myapp-linux | grep GLIBC_ | sort -u | grep -q -E 'GLIBC_2.3[2-9]|GLIBC_2.[4-9]'; then
-            echo "⚠️  警告：检测到高于GLIBC 2.31的依赖，可能导致运行失败！"
-            objdump -T dist/myapp-linux | grep GLIBC_ | sort -u | grep -E 'GLIBC_2.3[2-9]|GLIBC_2.[4-9]'
+            echo "⚠️  警告：存在高于GLIBC 2.31的依赖"
           else
-            echo "✅ 未检测到高于GLIBC 2.31的依赖，兼容性符合要求"
+            echo "✅ 无高于GLIBC 2.31的依赖"
           fi
           
-          echo "✅ 打包完成！产物信息："
-          ls -lh dist/myapp-linux  # 显示产物大小和权限
+          echo "✅ 打包完成"
+          ls -lh dist/myapp-linux
 
-      - name: 保存打包产物（保留7天）
+      - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
           name: myapp-static
@@ -218,19 +227,19 @@ jobs:
           retention-days: 7
 
   release:
-    needs: build-linux  # 依赖构建任务完成
+    needs: build-linux
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')  # 仅标签推送时触发
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: 下载打包产物
+      - name: 下载产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-static  # 与上一步产物名称一致
+          name: myapp-static
 
       - name: 创建GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: myapp-linux  # 上传产物到Release
-          generate_release_notes: true  # 自动生成Release Notes
+          files: myapp-linux
+          generate_release_notes: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub自动提供的令牌
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
