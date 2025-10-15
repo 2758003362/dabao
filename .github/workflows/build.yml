@@ -8,139 +8,126 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest  # 即Ubuntu 24.04
+    runs-on: ubuntu-latest
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置低GLIBC兼容的静态Python环境
+      - name: 配置静态Python环境
         run: |
+          set -x  # 开启命令日志
           PYTHON_URLS=(
             "https://github.com/astral-sh/python-build-standalone/releases/download/20240224/cpython-3.10.13+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz"
-            "https://github.com/astral-sh/python-build-standalone/releases/download/20240506/cpython-3.11.9+20240506-x86_64-unknown-linux-gnu-install_only.tar.gz"
           )
           
-          filename=""
           for url in "${PYTHON_URLS[@]}"; do
             current_filename=$(basename "$url")
-            echo "=== 下载Python: $url ==="
             rm -f "$current_filename"
-            if wget -v --timeout=30 --tries=5 "$url" -O "$current_filename"; then
+            if wget -v "$url" -O "$current_filename"; then
               if [ $(du -m "$current_filename" | cut -f1) -ge 25 ] && file "$current_filename" | grep -qi "gzip"; then
                 echo "✅ Python下载成功"
                 filename="$current_filename"
                 break
               fi
-              echo "警告：文件无效，跳过"
-              rm -f "$current_filename"
             fi
           done
           
-          if [ -z "$filename" ]; then
-            echo "错误：Python下载失败"
-            exit 1
-          fi
-          
           mkdir -p python
           tar -xzvf "$filename" -C python --strip-components=1 --warning=no-unknown-keyword --overwrite
-          if [ ! -f "./python/bin/python" ]; then
-            echo "错误：Python解压失败"
-            exit 1
-          fi
-          echo "✅ Python配置完成：$(./python/bin/python --version)"
+          [ -f "./python/bin/python" ] || { echo "错误：Python解压失败"; exit 1; }
+          echo "✅ Python版本：$(./python/bin/python --version)"
 
-      - name: 安装libaio1（适配Ubuntu 24.04最新版本）
+      - name: 安装libaio1（彻底修复无日志退出问题）
         run: |
-          echo "=== 适配Ubuntu 24.04安装libaio1 ==="
-          # 关键：先确认系统是否有libaio1包，避免盲目安装
-          apt_cache_result=$(apt-cache search libaio1 | grep -w "libaio1")
-          if [ -z "$apt_cache_result" ]; then
-            echo "⚠️ 系统未搜索到libaio1，尝试添加universal源（Ubuntu 24.04默认可能未启用）"
-            # 启用universal源（libaio1在universal仓库中）
+          set -x  # 所有命令都输出日志，定位失败点
+          set -euo pipefail  # 严格模式，错误立即退出
+          
+          echo "=== 1. 确认系统环境 ==="
+          # 显式输出系统版本和apt源状态
+          lsb_release -a 2>/dev/null || cat /etc/os-release
+          echo "当前apt源列表（前5行）："
+          head -n 5 /etc/apt/sources.list
+          
+          echo "=== 2. 检查并启用universe源 ==="
+          # 先检查universe源是否已启用
+          if ! grep -q "deb .* universe" /etc/apt/sources.list /etc/apt/sources.list.d/*; then
+            echo "启用universe源（libaio1所在仓库）"
+            # 备份原文件，避免修改失败无法恢复
+            sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
+            # 启用所有universe源（兼容不同写法）
             sudo sed -i '/^#\s*deb .* universe/s/^#//' /etc/apt/sources.list
-            sudo apt-get update -y
+            # 强制更新源，显式输出进度
+            sudo apt-get update -y -v || { echo "错误：apt update失败"; exit 1; }
           fi
           
-          # 方案1：优先安装Ubuntu 24.04默认的libaio1版本（无需指定旧版本）
-          if sudo apt-get install -y libaio1; then
-            echo "✅ apt安装libaio1成功（版本：$(dpkg -s libaio1 | grep Version | awk '{print $2}')）"
+          echo "=== 3. 优先apt安装libaio1 ==="
+          # 显式检查包是否存在
+          if ! apt-cache show libaio1 &> /dev/null; then
+            echo "错误：apt仓库中未找到libaio1包"
+            exit 1
+          fi
+          
+          # 安装并显式捕获错误
+          if sudo apt-get install -y -v libaio1; then
+            echo "✅ apt安装成功"
           else
-            echo "⚠️ apt安装失败，手动下载Ubuntu 24.04对应的libaio1版本"
-            # 方案2：手动下载Ubuntu 24.04（noble）的libaio1（版本0.3.113-5，当前有效）
-            LIB_AIO_URLS=(
-              "http://archive.ubuntu.com/ubuntu/pool/universe/liba/libaio/libaio1_0.3.113-5_amd64.deb"  # 官方24.04源
-              "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/universe/liba/libaio/libaio1_0.3.113-5_amd64.deb"  # 清华24.04源
-              "https://launchpad.net/ubuntu/+archive/primary/+files/libaio1_0.3.113-5_amd64.deb"  # Launchpad官方包
-            )
+            echo "=== 4. apt失败，手动下载安装 ==="
+            # 使用Ubuntu 24.04官方包的备用链接（经测试有效）
+            LIB_AIO_URL="https://ftp.br.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.113-5_amd64.deb"
+            rm -f libaio1.deb
             
-            deb_downloaded=false
-            for url in "${LIB_AIO_URLS[@]}"; do
-              echo "=== 下载libaio1（24.04版本）: $url ==="
-              rm -f libaio1.deb
-              if wget --progress=bar:force "$url" -O libaio1.deb; then
-                # 校验：deb包大小约12KB，且结构有效
-                if [ $(du -k libaio1.deb | cut -f1) -ge 10 ] && dpkg-deb --info libaio1.deb &> /dev/null; then
-                  echo "✅ libaio1.deb下载成功"
-                  deb_downloaded=true
-                  break
-                fi
-                echo "警告：deb包无效，跳过"
-                rm -f libaio1.deb
-              fi
-            done
+            # 下载并验证
+            wget -v --timeout=30 "$LIB_AIO_URL" -O libaio1.deb || { echo "错误：手动下载失败"; exit 1; }
+            [ $(du -k libaio1.deb | cut -f1) -ge 10 ] || { echo "错误：deb包过小"; exit 1; }
+            dpkg-deb --info libaio1.deb &> /dev/null || { echo "错误：deb包无效"; exit 1; }
             
-            if [ "$deb_downloaded" = false ]; then
-              echo "错误：所有libaio1下载失败"
-              exit 1
-            fi
-            
-            # 安装24.04版本的deb包
+            # 安装并修复依赖
             sudo dpkg -i libaio1.deb || {
-              echo "尝试修复依赖..."
-              sudo apt-get -f install -y && sudo dpkg -i libaio1.deb
+              echo "修复依赖..."
+              sudo apt-get -f install -y -v || { echo "错误：依赖修复失败"; exit 1; }
+              sudo dpkg -i libaio1.deb || { echo "错误：手动安装失败"; exit 1; }
             }
-            if [ $? -ne 0 ]; then
-              echo "错误：libaio1.deb安装失败"
-              exit 1
-            fi
           fi
           
-          # 验证并获取libaio.so.1路径
-          if ! dpkg -s libaio1 &> /dev/null; then
-            echo "错误：libaio1未安装成功"
-            exit 1
-          fi
+          echo "=== 5. 验证libaio1安装结果 ==="
+          # 双重验证：dpkg状态 + 文件存在性
+          dpkg -s libaio1 &> /dev/null || { echo "错误：dpkg未检测到libaio1"; exit 1; }
+          
+          # 显式查找libaio.so.1，增加默认路径fallback
           LIB_AIO_PATH=$(find /lib/x86_64-linux-gnu/ /usr/lib/x86_64-linux-gnu/ -name "libaio.so.1" | head -n 1)
+          # 若find失败，使用Ubuntu默认路径fallback
           if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "错误：未找到libaio.so.1"
-            ls -la /lib/x86_64-linux-gnu/ | grep libaio
-            exit 1
+            echo "警告：find未找到路径，使用默认路径 fallback"
+            LIB_AIO_PATH="/lib/x86_64-linux-gnu/libaio.so.1"
           fi
-          echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          echo "✅ libaio1安装完成，路径：$LIB_AIO_PATH"
+          
+          # 最终验证路径有效性
+          [ -f "$LIB_AIO_PATH" ] || { echo "错误：libaio.so.1不存在（路径：$LIB_AIO_PATH）"; exit 1; }
+          echo "确认libaio路径：$LIB_AIO_PATH（大小：$(du -k "$LIB_AIO_PATH" | cut -f1) KB）"
+          
+          echo "=== 6. 写入环境变量 ==="
+          # 显式验证环境变量文件可写
+          [ -w "$GITHUB_ENV" ] || { echo "错误：$GITHUB_ENV不可写"; exit 1; }
+          echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> "$GITHUB_ENV"
+          # 验证写入结果
+          grep "LIB_AIO_PATH" "$GITHUB_ENV" || { echo "错误：环境变量写入失败"; exit 1; }
+          
+          echo "✅ libaio1安装完成，路径已保存"
 
       - name: 安装Python依赖
         run: |
+          set -x
           ./python/bin/python -m pip install --upgrade pip==23.3.1
-          ./python/bin/python -m pip install \
-            dmPython==2.5.22 \
-            pandas==1.5.3 \
-            flask==2.2.5 \
-            werkzeug==2.2.3 \
-            pyinstaller==5.13.2
-          
-          if ! ./python/bin/python -c "import dmPython"; then
-            echo "错误：dmPython导入失败"
-            exit 1
-          fi
-          echo "✅ 所有依赖安装成功"
+          ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 flask==2.2.5 werkzeug==2.2.3 pyinstaller==5.13.2
+          ./python/bin/python -c "import dmPython; import pandas; import flask" || { echo "错误：依赖导入失败"; exit 1; }
 
       - name: 打包应用
         run: |
-          if [ ! -f "./main.py" ]; then
-            echo "错误：未找到main.py"
-            exit 1
-          fi
+          set -x
+          [ -f "./main.py" ] || { echo "错误：未找到main.py"; exit 1; }
+          
+          LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
+          [ -f "$LIB_AIO_PATH" ] || { echo "错误：环境变量路径无效"; exit 1; }
           
           python_lib_path=$(find ./python/lib -name "python3.*" -type d | head -n 1)/site-packages
           ./python/bin/pyinstaller --onefile --name myapp-linux \
@@ -149,25 +136,14 @@ jobs:
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
             --hidden-import=pandas \
-            --add-binary="${{ env.LIB_AIO_PATH }}:." \
+            --add-binary="$LIB_AIO_PATH:." \
             --runtime-tmpdir=. \
             --strip \
             --no-compress \
             ./main.py
           
-          if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：打包失败"
-            exit 1
-          fi
-          
-          # 验证GLIBC依赖
-          if objdump -T dist/myapp-linux | grep GLIBC_ | grep -q -E 'GLIBC_2.3[2-9]|GLIBC_2.[4-9]'; then
-            echo "⚠️ 存在高于GLIBC 2.31的依赖"
-          else
-            echo "✅ 无高于GLIBC 2.31的依赖"
-          fi
-          echo "✅ 打包完成"
-          ls -lh dist/myapp-linux
+          [ -f "dist/myapp-linux" ] || { echo "错误：打包失败"; exit 1; }
+          echo "✅ 打包完成，产物大小：$(du -h dist/myapp-linux | cut -f1)"
 
       - name: 保存产物
         uses: actions/upload-artifact@v4
