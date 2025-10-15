@@ -15,7 +15,7 @@ jobs:
 
       - name: 配置静态Python环境
         run: |
-          set -x  # 开启命令日志
+          set -x
           PYTHON_URLS=(
             "https://github.com/astral-sh/python-build-standalone/releases/download/20240224/cpython-3.10.13+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz"
           )
@@ -37,89 +37,88 @@ jobs:
           [ -f "./python/bin/python" ] || { echo "错误：Python解压失败"; exit 1; }
           echo "✅ Python版本：$(./python/bin/python --version)"
 
-      - name: 安装libaio1（彻底修复无日志退出问题）
+      - name: 安装libaio1（适配Ubuntu 24.04 deb822源+容错验证）
         run: |
-          set -x  # 所有命令都输出日志，定位失败点
-          set -euo pipefail  # 严格模式，错误立即退出
+          set -x
+          set -euo pipefail
           
-          echo "=== 1. 确认系统环境 ==="
-          # 显式输出系统版本和apt源状态
-          lsb_release -a 2>/dev/null || cat /etc/os-release
-          echo "当前apt源列表（前5行）："
-          head -n 5 /etc/apt/sources.list
+          echo "=== 1. 适配Ubuntu 24.04源格式（deb822） ==="
+          # 24.04用add-apt-repository管理源，需先安装工具包
+          sudo apt-get install -y software-properties-common || { echo "错误：安装源管理工具失败"; exit 1; }
           
-          echo "=== 2. 检查并启用universe源 ==="
-          # 先检查universe源是否已启用
-          if ! grep -q "deb .* universe" /etc/apt/sources.list /etc/apt/sources.list.d/*; then
-            echo "启用universe源（libaio1所在仓库）"
-            # 备份原文件，避免修改失败无法恢复
-            sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
-            # 启用所有universe源（兼容不同写法）
-            sudo sed -i '/^#\s*deb .* universe/s/^#//' /etc/apt/sources.list
-            # 强制更新源，显式输出进度
+          # 启用universe源（24.04正确方式，自动更新deb822格式的ubuntu.sources）
+          if ! grep -q "universe" /etc/apt/sources.list.d/ubuntu.sources; then
+            echo "启用universe源（适配deb822格式）"
+            sudo add-apt-repository -y universe
             sudo apt-get update -y -v || { echo "错误：apt update失败"; exit 1; }
           fi
           
-          echo "=== 3. 优先apt安装libaio1 ==="
-          # 显式检查包是否存在
+          echo "=== 2. 安装libaio1（优先apt） ==="
+          # 显式确认包存在
           if ! apt-cache show libaio1 &> /dev/null; then
-            echo "错误：apt仓库中未找到libaio1包"
+            echo "错误：apt仓库中未找到libaio1（universe源未启用成功）"
             exit 1
           fi
           
-          # 安装并显式捕获错误
-          if sudo apt-get install -y -v libaio1; then
-            echo "✅ apt安装成功"
+          # 安装（允许apt返回成功后dpkg状态异常，后续用文件验证）
+          sudo apt-get install -y -v libaio1
+          echo "✅ apt安装命令执行完成"
+          
+          echo "=== 3. 多重容错验证（文件优先） ==="
+          # 关键：以“文件实际存在”为最终判断标准，而非dpkg数据库
+          LIB_AIO_DEFAULT_PATH="/lib/x86_64-linux-gnu/libaio.so.1"
+          
+          # 验证1：检查dpkg状态（宽松模式，失败不退出）
+          if dpkg -s libaio1 &> /dev/null; then
+            echo "✅ 验证1（dpkg）：libaio1已注册"
           else
-            echo "=== 4. apt失败，手动下载安装 ==="
-            # 使用Ubuntu 24.04官方包的备用链接（经测试有效）
-            LIB_AIO_URL="https://ftp.br.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.113-5_amd64.deb"
-            rm -f libaio1.deb
-            
-            # 下载并验证
-            wget -v --timeout=30 "$LIB_AIO_URL" -O libaio1.deb || { echo "错误：手动下载失败"; exit 1; }
-            [ $(du -k libaio1.deb | cut -f1) -ge 10 ] || { echo "错误：deb包过小"; exit 1; }
-            dpkg-deb --info libaio1.deb &> /dev/null || { echo "错误：deb包无效"; exit 1; }
-            
-            # 安装并修复依赖
-            sudo dpkg -i libaio1.deb || {
-              echo "修复依赖..."
-              sudo apt-get -f install -y -v || { echo "错误：依赖修复失败"; exit 1; }
-              sudo dpkg -i libaio1.deb || { echo "错误：手动安装失败"; exit 1; }
-            }
+            echo "⚠️ 验证1（dpkg）：dpkg数据库未记录，但以文件为准"
           fi
           
-          echo "=== 5. 验证libaio1安装结果 ==="
-          # 双重验证：dpkg状态 + 文件存在性
-          dpkg -s libaio1 &> /dev/null || { echo "错误：dpkg未检测到libaio1"; exit 1; }
-          
-          # 显式查找libaio.so.1，增加默认路径fallback
-          LIB_AIO_PATH=$(find /lib/x86_64-linux-gnu/ /usr/lib/x86_64-linux-gnu/ -name "libaio.so.1" | head -n 1)
-          # 若find失败，使用Ubuntu默认路径fallback
-          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "警告：find未找到路径，使用默认路径 fallback"
-            LIB_AIO_PATH="/lib/x86_64-linux-gnu/libaio.so.1"
+          # 验证2：检查核心文件是否存在（最终验证）
+          if [ -f "$LIB_AIO_DEFAULT_PATH" ]; then
+            LIB_AIO_PATH="$LIB_AIO_DEFAULT_PATH"
+            echo "✅ 验证2（文件）：libaio.so.1存在，路径：$LIB_AIO_PATH"
+          else
+            # 兜底：查找文件（防止路径异常）
+            LIB_AIO_PATH=$(find /lib/x86_64-linux-gnu/ /usr/lib/x86_64-linux-gnu/ -name "libaio.so.1" | head -n 1)
+            if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+              echo "❌ 验证2失败：未找到libaio.so.1，尝试手动安装"
+              # 手动下载fallback（Debian源，兼容24.04）
+              wget -v "https://ftp.br.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.113-5_amd64.deb" -O libaio1.deb
+              sudo dpkg -i --force-all libaio1.deb  # 强制安装，忽略dpkg校验
+              LIB_AIO_PATH="$LIB_AIO_DEFAULT_PATH"
+              [ -f "$LIB_AIO_PATH" ] || { echo "错误：手动安装后仍无文件"; exit 1; }
+            fi
           fi
           
-          # 最终验证路径有效性
-          [ -f "$LIB_AIO_PATH" ] || { echo "错误：libaio.so.1不存在（路径：$LIB_AIO_PATH）"; exit 1; }
-          echo "确认libaio路径：$LIB_AIO_PATH（大小：$(du -k "$LIB_AIO_PATH" | cut -f1) KB）"
+          echo "=== 4. 确认文件有效性 ==="
+          # 验证文件是否可读取（避免权限问题）
+          [ -r "$LIB_AIO_PATH" ] || { echo "错误：libaio.so.1不可读"; exit 1; }
+          echo "确认有效路径：$LIB_AIO_PATH（大小：$(du -k "$LIB_AIO_PATH" | cut -f1) KB）"
           
-          echo "=== 6. 写入环境变量 ==="
-          # 显式验证环境变量文件可写
+          echo "=== 5. 写入环境变量 ==="
           [ -w "$GITHUB_ENV" ] || { echo "错误：$GITHUB_ENV不可写"; exit 1; }
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> "$GITHUB_ENV"
-          # 验证写入结果
           grep "LIB_AIO_PATH" "$GITHUB_ENV" || { echo "错误：环境变量写入失败"; exit 1; }
           
-          echo "✅ libaio1安装完成，路径已保存"
+          echo "✅ libaio1安装完成（容错验证通过）"
 
-      - name: 安装Python依赖
+      - name: 安装Python依赖（验证dmPython）
         run: |
           set -x
+          # 升级pip并安装依赖
           ./python/bin/python -m pip install --upgrade pip==23.3.1
           ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 flask==2.2.5 werkzeug==2.2.3 pyinstaller==5.13.2
-          ./python/bin/python -c "import dmPython; import pandas; import flask" || { echo "错误：依赖导入失败"; exit 1; }
+          
+          # 关键：验证dmPython能否加载libaio（实际使用场景）
+          if ! ./python/bin/python -c "import dmPython; print('dmPython版本：', dmPython.__version__)" &> /dev/null; then
+            echo "错误：dmPython导入失败（可能是libaio路径问题）"
+            echo "当前libaio路径：${{ env.LIB_AIO_PATH }}"
+            ldd $(find ./python -name "dmPython.*.so") | grep libaio || true  # 检查依赖关联
+            exit 1
+          fi
+          echo "✅ 所有依赖导入成功"
 
       - name: 打包应用
         run: |
@@ -129,21 +128,30 @@ jobs:
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           [ -f "$LIB_AIO_PATH" ] || { echo "错误：环境变量路径无效"; exit 1; }
           
-          python_lib_path=$(find ./python/lib -name "python3.*" -type d | head -n 1)/site-packages
+          # 适配Python 3.10的依赖路径
+          python_lib_path=$(find ./python/lib -name "python3.10" -type d | head -n 1)/site-packages
+          [ -d "$python_lib_path" ] || { echo "错误：Python依赖路径不存在"; exit 1; }
+          
+          # 执行打包
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths="$python_lib_path" \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
             --hidden-import=pandas \
+            --hidden-import=pandas.core \
+            --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
             --runtime-tmpdir=. \
             --strip \
             --no-compress \
             ./main.py
           
+          # 验证产物
           [ -f "dist/myapp-linux" ] || { echo "错误：打包失败"; exit 1; }
-          echo "✅ 打包完成，产物大小：$(du -h dist/myapp-linux | cut -f1)"
+          echo "✅ 打包完成，产物信息："
+          ls -lh dist/myapp-linux
+          file dist/myapp-linux  # 确认是可执行文件
 
       - name: 保存产物
         uses: actions/upload-artifact@v4
