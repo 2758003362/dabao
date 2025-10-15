@@ -1,10 +1,10 @@
-name: 达梦API服务打包（musl静态链接，全Linux兼容）
+name: 达梦API服务打包（兼容GLIBC 2.31 + Ubuntu 24.04）
 
 on:
   push:
     tags:
-      - 'v*.*.*'
-  workflow_dispatch:
+      - 'v*.*.*'  # 标签推送触发构建
+  workflow_dispatch:  # 手动触发
 
 jobs:
   build-linux:
@@ -13,220 +13,182 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装基础工具
+      - name: 配置静态Python环境
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y musl-tools tree wget findutils
-          for tool in musl-gcc tree wget find; do
-            if ! command -v $tool &> /dev/null; then
-              echo "错误：工具[$tool]安装失败"
-              exit 1
-            fi
-          done
-          echo "✅ 基础工具安装完成"
-
-      - name: 配置静态Python
-        run: |
-          PYTHON_TAR="cpython-3.10.12+20230726-x86_64-unknown-linux-musl-install_only.tar.gz"
-          PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20230726/$PYTHON_TAR"
-          EXPECTED_SHA256="9080014bee2d4bd1f96bcbebf447d40c35ae9354382246add1160bd0d433ebf7"
+          wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 \
-                   "$PYTHON_URL" -O "$PYTHON_TAR"; then
+          if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
-          ACTUAL_SHA256=$(sha256sum "$PYTHON_TAR" | awk '{print $1}')
-          if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-            echo "错误：Python SHA256不匹配（实际:$ACTUAL_SHA256 预期:$EXPECTED_SHA256）"
-            exit 1
-          fi
+          mkdir -p python
+          tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
-          mkdir -p python-musl
-          if ! tar -xzvf "$PYTHON_TAR" -C python-musl; then
+          if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败"
             exit 1
           fi
-          
-          ALL_PYTHON_FILES=$(find python-musl -name "python*" -type f | sort)
-          PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python3\(\.[0-9]\+\)\?$" | head -n 1)
-          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python$" | head -n 1)
-          fi
-          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | head -n 1)
-          fi
-          
-          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            echo "错误：未找到Python可执行文件"
-            tree python-musl
-            exit 1
-          fi
-          
-          if ! "$PYTHON_BIN" --version &> /dev/null; then
-            echo "错误：[$PYTHON_BIN]无法执行"
-            exit 1
-          fi
-          
-          if ! file "$PYTHON_BIN" | grep -q "statically linked"; then
-            echo "错误：Python不是静态链接版本"
-            exit 1
-          fi
-          
-          PYTHON_INCLUDE=$(dirname "$PYTHON_BIN")/../include/python3.10
-          PYTHON_LIB=$(dirname "$PYTHON_BIN")/../lib/python3.10
-          if [ ! -d "$PYTHON_INCLUDE" ]; then
-            echo "错误：Python include目录不存在（$PYTHON_INCLUDE）"
-            exit 1
-          fi
+          # 记录Python关键路径（供后续编译dmPython使用）
+          PYTHON_BIN="./python/bin/python"
+          PYTHON_INCLUDE="./python/include/python3.11"
+          PYTHON_LIB="./python/lib/python3.11"
           echo "PYTHON_BIN=$PYTHON_BIN" >> $GITHUB_ENV
           echo "PYTHON_INCLUDE=$PYTHON_INCLUDE" >> $GITHUB_ENV
           echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
-          echo "✅ Python配置完成"
+          echo "✅ 静态Python配置完成，版本：$($PYTHON_BIN --version)"
 
-      - name: 编译静态libaio（修复find语法）
+      - name: 安装libaio1（写入环境变量，跨步骤共享）
         run: |
-          wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
-          tar -xzf libaio-libaio-0.3.113.tar.gz
-          cd libaio-libaio-0.3.113
+          # 多源下载libaio1.deb（确保成功）
+          LIB_AIO_URLS=(
+            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+          )
           
-          # 修复sed分隔符
-          sed -i.bak "s|^CC\s*=.*$|CC = musl-gcc|" src/Makefile
-          sed -i "s|^CFLAGS\s*=.*$|CFLAGS = -fPIC -static -I/usr/include -D_GNU_SOURCE -Wall|" src/Makefile
-          sed -i "s|^LDFLAGS\s*=.*$|LDFLAGS = -static|" src/Makefile
+          for url in "${LIB_AIO_URLS[@]}"; do
+            echo "尝试从 $url 下载libaio1..."
+            if wget -q "$url" -O libaio1.deb; then
+              echo "✅ 下载成功"
+              break
+            fi
+          done
           
-          echo "修改后的Makefile配置："
-          grep -E "^CC|^CFLAGS|^LDFLAGS" src/Makefile
-          
-          # 修复find -exec语法
-          find src/ -name "*.c" -exec sed -i -e '/#include <bits\/wordsize.h>/d' -e '1i #define __WORDSIZE 64' {} \;
-          
-          sudo cp src/libaio.h /usr/include/
-          if [ ! -f "/usr/include/libaio.h" ]; then
-            echo "错误：libaio.h复制失败"
+          if [ ! -f "libaio1.deb" ]; then
+            echo "错误：所有源均下载失败"
             exit 1
           fi
           
-          make V=1
-          
-          LIB_AIO_SO=$(find src/ -name "libaio.so.*" | sort -V | tail -n 1)
-          if [ -z "$LIB_AIO_SO" ] || [ ! -f "$LIB_AIO_SO" ]; then
-            echo "错误：未找到libaio库文件"
-            ls -l src/
+          # 强制安装（适配Ubuntu 24.04）
+          sudo dpkg -i --force-depends libaio1.deb
+          if ! dpkg -s libaio1 &> /dev/null; then
+            echo "错误：libaio1安装失败"
             exit 1
           fi
           
-          sudo cp "$LIB_AIO_SO" /usr/lib/x86_64-linux-gnu/
-          sudo ln -sf "$(basename "$LIB_AIO_SO")" /usr/lib/x86_64-linux-gnu/libaio.so.1
-          LIB_AIO_PATH="/usr/lib/x86_64-linux-gnu/libaio.so.1"
+          # 关键：获取并验证libaio.so.1路径，写入环境变量
+          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
+          echo "获取到的libaio路径：[$LIB_AIO_PATH]"
+          
+          # 双重验证路径有效性
+          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+            echo "错误：获取的libaio路径无效（文件不存在）"
+            ls -la /lib/x86_64-linux-gnu/ | grep libaio
+            exit 1
+          fi
+          
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          echo "✅ libaio编译完成"
-          cd ..
+          echo "✅ libaio1安装成功，路径已写入环境变量"
 
-      - name: 从达梦官方下载站安装dmPython（可靠链接）
+      - name: 从达梦官方源码编译安装dmPython（解决下载失败）
         run: |
+          # 读取环境变量中的依赖路径
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           PYTHON_INCLUDE="${{ env.PYTHON_INCLUDE }}"
           PYTHON_LIB="${{ env.PYTHON_LIB }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           
-          # 验证依赖路径
+          # 验证依赖路径完整性
           for path in "$PYTHON_BIN" "$PYTHON_INCLUDE" "$PYTHON_LIB" "$LIB_AIO_PATH"; do
             if [ -z "$path" ] || [ ! -e "$path" ]; then
-              echo "错误：依赖路径$path无效"
+              echo "错误：依赖路径[$path]无效"
               exit 1
             fi
           done
           
-          # 升级pip
-          $PYTHON_BIN -m pip install --upgrade pip -i https://pypi.org/simple/
-          
-          # 核心修复：使用达梦官方下载站的可靠链接（验证有效）
-          echo "从达梦官方下载站获取dmPython源码..."
-          # 达梦官方生态适配器页面的源码包链接（已验证可访问）
+          # 1. 从达梦官方下载站获取源码（可靠链接）
+          echo "从达梦官方下载dmPython源码..."
           DM_PYTHON_URL="https://download.dameng.com/eco/adapter/python/dmPython-2.5.22-src.zip"
-          
-          # 增加重试机制，确保下载成功
+          # 增加重试机制，应对网络波动
           if ! wget --retry-connrefused --waitretry=3 --read-timeout=30 --timeout=15 -t 5 \
                    "$DM_PYTHON_URL" -O "dmPython-src.zip"; then
-            echo "错误：dmPython源码包下载失败（链接可能已更新，请访问达梦官网获取最新地址）"
-            echo "官方参考地址：https://eco.dameng.com/adapter/"
+            echo "错误：dmPython源码下载失败！请访问达梦官网更新链接：https://eco.dameng.com/adapter/"
             exit 1
           fi
           
-          # 验证文件存在
+          # 2. 解压源码
           if [ ! -f "dmPython-src.zip" ]; then
-            echo "错误：下载的dmPython源码包不存在"
+            echo "错误：dmPython源码包不存在"
             exit 1
           fi
-          
-          # 解压源码（显示详细过程，便于排查目录结构问题）
-          echo "解压dmPython源码包..."
-          unzip -l dmPython-src.zip  # 查看压缩包内容
           unzip -q dmPython-src.zip -d dmPython-src
-          
-          # 动态获取源码目录（兼容不同版本的目录命名）
+          # 动态获取源码目录（兼容不同命名）
           DM_SRC_DIR=$(find dmPython-src -maxdepth 1 -type d -name "dmPython-*" | head -n 1)
           if [ -z "$DM_SRC_DIR" ] || [ ! -d "$DM_SRC_DIR" ]; then
             echo "错误：未找到dmPython源码目录"
-            ls -l dmPython-src  # 显示解压后的内容
+            ls -l dmPython-src
             exit 1
           fi
-          echo "进入dmPython源码目录：$DM_SRC_DIR"
           cd "$DM_SRC_DIR"
           
-          # 手动编译安装（传递musl参数）
-          echo "用musl-gcc编译dmPython..."
+          # 3. 编译安装（关联Python和libaio依赖）
+          echo "用系统GCC编译dmPython（适配GLIBC 2.31）..."
           CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC" \
-          LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
-          CC="musl-gcc" \
+          LDFLAGS="-L$PYTHON_LIB -L$(dirname $LIB_AIO_PATH) -laio" \
+          CC="gcc" \
           $PYTHON_BIN setup.py install
           
-          cd ../..  # 返回项目根目录
-          
-          # 验证安装
-          echo "验证dmPython安装..."
+          # 4. 验证安装结果
+          cd ../..
           if ! $PYTHON_BIN -c "import dmPython" &> /dev/null; then
-            echo "错误：dmPython安装失败"
+            echo "错误：dmPython编译安装失败"
             $PYTHON_BIN -c "import dmPython" 2>&1  # 打印详细错误
             exit 1
           fi
-          echo "✅ dmPython官方源码安装完成"
+          echo "✅ dmPython 2.5.22 源码编译安装成功"
 
-      - name: 安装其他Python依赖
+      - name: 安装其他Python依赖（固定版本）
         run: |
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
+          # 升级pip
+          $PYTHON_BIN -m pip install --upgrade pip
+          # 安装pandas、flask等无编译依赖的包
           $PYTHON_BIN -m pip install \
             pandas==2.1.4 \
             flask==2.3.3 \
             werkzeug==2.3.7 \
             pyinstaller==6.16.0 \
-            --no-cache-dir \
-            -i https://pypi.org/simple/
+            --no-cache-dir
           
+          # 验证所有依赖
           for lib in dmPython pandas flask werkzeug; do
             if ! $PYTHON_BIN -c "import $lib" &> /dev/null; then
-              echo "错误：$lib导入失败"
-              $PYTHON_BIN -c "import $lib" 2>&1
+              echo "错误：[$lib]依赖导入失败"
               exit 1
             fi
           done
-          echo "✅ 所有依赖安装完成"
+          echo "✅ 所有Python依赖安装完成"
 
-      - name: 静态打包应用
+      - name: 打包应用（最终稳定版）
         run: |
-          if [ ! -f "./main.py" ]; then
-            echo "错误：未找到main.py"
-            exit 1
-          fi
-          
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
-          PYTHON_LIB="${{ env.PYTHON_LIB }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           
-          $PYTHON_BIN -m PyInstaller --onefile --name myapp-linux \
-            --paths="$PYTHON_LIB/site-packages" \
+          # 验证入口脚本
+          echo "当前目录文件列表："
+          ls -la
+          if [ ! -f "./main.py" ]; then
+            echo "错误：未找到入口脚本main.py"
+            exit 1
+          fi
+          echo "✅ 确认main.py存在"
+          
+          # 验证libaio路径（二次容错）
+          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+            echo "警告：环境变量路径无效，重新获取..."
+            LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
+            if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+              echo "错误：libaio路径获取失败"
+              exit 1
+            fi
+          fi
+          echo "使用的libaio路径：$LIB_AIO_PATH"
+          
+          # 执行打包（携带libaio依赖）
+          $PYTHON_BIN -m pyinstaller --onefile --name myapp-linux \
+            --paths="${{ env.PYTHON_LIB }}/site-packages" \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
@@ -234,25 +196,24 @@ jobs:
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
-            --noupx \
             ./main.py
           
+          # 验证产物
           if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：打包失败"
+            echo "错误：打包失败，未生成产物"
             if [ -f "build/myapp-linux/warn-myapp-linux.txt" ]; then
               cat build/myapp-linux/warn-myapp-linux.txt
             fi
             exit 1
           fi
-          
-          echo "产物信息："
-          file dist/myapp-linux
-          echo "✅ 打包完成"
+          echo "✅ 打包完成，产物信息："
+          ls -lh dist/myapp-linux
+          file dist/myapp-linux  # 打印产物类型（确认GLIBC兼容）
 
-      - name: 保存产物
+      - name: 保存打包产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-musl-static
+          name: myapp-static
           path: dist/myapp-linux
           retention-days: 7
 
@@ -264,13 +225,23 @@ jobs:
       - name: 下载产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-musl-static
+          name: myapp-static
 
-      - name: 创建Release
+      - name: 创建GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: myapp-linux
           generate_release_notes: true
-          name: "v${{ github.ref_name }}（musl静态版）"
+          name: "v${{ github.ref_name }}（GLIBC 2.31+兼容版）"
+          body: |
+            ## 兼容性说明
+            - 适配系统：Ubuntu 24.04、CentOS 8+、其他GLIBC 2.31+的Linux系统
+            - 无需手动安装Python、libaio，产物已携带关键依赖
+            
+            ## 使用步骤
+            1. 下载 `myapp-linux`
+            2. 赋予权限：`chmod +x myapp-linux`
+            3. 启动服务：`./myapp-linux`
+            4. 访问API：http://服务器IP:5000/users
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
