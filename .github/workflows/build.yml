@@ -15,17 +15,35 @@ jobs:
 
       - name: 配置低GLIBC兼容的静态Python环境
         run: |
-          # 使用明确兼容GLIBC 2.17+的Python版本（最低支持到2.17，自然兼容2.31+）
-          wget https://github.com/indygreg/python-build-standalone/releases/download/20230626/cpython-3.11.4+20230626-x86_64-unknown-linux-gnu-install_only.tar.gz
+          # 更新为可用的Python版本链接，兼容GLIBC 2.17+
+          # 主链接使用最新可用的兼容版本
+          PYTHON_URLS=(
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20231002/cpython-3.11.6+20231002-x86_64-unknown-linux-gnu-install_only.tar.gz"
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20230507/cpython-3.11.3+20230507-x86_64-unknown-linux-gnu-install_only.tar.gz"
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20230427/cpython-3.10.11+20230427-x86_64-unknown-linux-gnu-install_only.tar.gz"
+          )
           
-          if [ ! -f "cpython-3.11.4+20230626-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
-            echo "错误：Python压缩包下载失败"
+          # 尝试从多个链接下载，确保成功
+          for url in "${PYTHON_URLS[@]}"; do
+            filename=$(basename "$url")
+            echo "尝试下载: $url"
+            if wget -q "$url" -O "$filename"; then
+              echo "✅ Python压缩包下载成功: $filename"
+              break
+            fi
+          done
+          
+          # 检查是否下载成功
+          if [ -z "$filename" ] || [ ! -f "$filename" ]; then
+            echo "错误：所有Python压缩包下载链接均失效"
             exit 1
           fi
           
+          # 解压Python
           mkdir -p python
-          tar -xzf cpython-3.11.4+20230626-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
+          tar -xzf "$filename" -C python --strip-components=1
           
+          # 验证Python是否可用
           if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败"
             exit 1
@@ -38,7 +56,6 @@ jobs:
 
       - name: 安装libaio1并验证版本兼容性
         run: |
-          # 多源下载确保兼容性版本
           LIB_AIO_URLS=(
             "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
@@ -57,14 +74,12 @@ jobs:
             exit 1
           fi
           
-          # 安装并检查
           sudo dpkg -i --force-depends libaio1.deb
           if ! dpkg -s libaio1 &> /dev/null; then
             echo "错误：libaio1安装失败"
             exit 1
           fi
           
-          # 获取路径
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
           echo "获取到的libaio路径：[$LIB_AIO_PATH]"
           
@@ -80,19 +95,16 @@ jobs:
       - name: 安装兼容低GLIBC的Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 使用明确兼容旧版GLIBC的依赖版本
           ./python/bin/python -m pip install \
             dmPython==2.5.22 \
-            pandas==1.5.3 \  # 降低pandas版本以减少新特性依赖
+            pandas==1.5.3 \
             flask==2.2.5 \
             werkzeug==2.2.3 \
-            pyinstaller==5.13.2  # 较旧版本的pyinstaller依赖更低的GLIBC
+            pyinstaller==5.13.2
           
-          # 验证依赖的GLIBC兼容性
           echo "检查dmPython的依赖："
           ldd $(find ./python -name "dmPython.*.so") | grep libc || true
           
-          # 验证导入
           if ./python/bin/python -c "import dmPython; import pandas; import flask" &> /dev/null; then
             echo "✅ 所有核心依赖安装成功"
           else
@@ -119,7 +131,6 @@ jobs:
             fi
           fi
           
-          # 关键优化：使用更严格的打包参数确保兼容性
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -130,10 +141,10 @@ jobs:
             --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
             --runtime-tmpdir=. \
-            --strip \  # 移除调试符号，减少依赖
-            --exclude-module=ctypes \  # 排除可能引入高版本依赖的模块
+            --strip \
+            --exclude-module=ctypes \
             --exclude-module=distutils \
-            --no-compress \  # 禁用压缩，避免解压时的潜在问题
+            --no-compress \
             ./main.py
           
           if [ ! -f "dist/myapp-linux" ]; then
@@ -141,15 +152,12 @@ jobs:
             exit 1
           fi
           
-          # 关键步骤：详细检查GLIBC依赖版本
           echo "==== 产物GLIBC依赖检查 ===="
           objdump -T dist/myapp-linux | grep GLIBC_ | sort -u | grep -v GLIBC_2.3[2-9] | grep -v GLIBC_2.[4-9]
           echo "=========================="
           
-          # 检查是否存在高于2.31的依赖
           if objdump -T dist/myapp-linux | grep GLIBC_ | sort -u | grep -q -E 'GLIBC_2.3[2-9]|GLIBC_2.[4-9]'; then
             echo "警告：检测到高于GLIBC 2.31的依赖"
-            # 列出具体的高版本依赖
             objdump -T dist/myapp-linux | grep GLIBC_ | sort -u | grep -E 'GLIBC_2.3[2-9]|GLIBC_2.[4-9]'
           else
             echo "✅ 未检测到高于GLIBC 2.31的依赖"
