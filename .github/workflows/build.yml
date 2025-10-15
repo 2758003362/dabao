@@ -161,7 +161,7 @@ jobs:
           echo "✅ libaio编译完成（实际库文件: $LIB_AIO_SO，链接: $LIB_AIO_PATH）"
           cd ..  # 返回项目根目录
 
-      - name: 绕403+多镜像下载dmPython源码（核心修复）
+      - name: 用pip安装dmPython（适配musl编译）
         run: |
           # 1. 读取环境变量中的依赖路径
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
@@ -179,108 +179,46 @@ jobs:
             echo "✅ 依赖路径[$path]有效"
           done
           
-          # 3. 升级pip（确保工具最新）
-          echo "升级pip（使用PyPI官方源）..."
-          $PYTHON_BIN -m pip install --upgrade pip -i https://pypi.org/simple/
+          # 3. 升级pip并配置国内镜像（提高成功率）
+          echo "升级pip（使用清华PyPI镜像加速）..."
+          $PYTHON_BIN -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple/
           
-          # 4. 核心：多镜像+绕403下载dmPython源码
-          # 配置参数
-          DM_PYTHON_FILENAME="dmPython-2.5.22-src.zip"  # 源码包文件名
-          MIN_EXPECTED_SIZE=140000  # 最小文件大小（140KB，避免下载错误页面）
-          DOWNLOAD_SUCCESS=0        # 下载成功标记
+          # 4. 核心：用pip安装dmPython，传递musl编译参数
+          echo "用pip安装dmPython（强制源码编译，适配musl）..."
+          # 关键参数说明：
+          # - CC=musl-gcc：指定musl编译器
+          # - CFLAGS：关联Python头文件和系统头文件
+          # - LDFLAGS：关联Python库和静态libaio
+          # - --no-binary :all:：强制pip从源码编译（避免预编译wheel不兼容）
+          # - 清华镜像：解决官方源访问慢或版本缺失问题
+          CC="musl-gcc" \
+          CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC" \
+          LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
+          $PYTHON_BIN -m pip install \
+            dmPython==2.5.16 \  # 选择PyPI有源码包的版本（2.5.16已验证兼容）
+            --no-binary :all: \  # 强制源码编译，不使用预编译wheel
+            --no-cache-dir \     # 禁用缓存，避免旧版本干扰
+            -i https://pypi.tuna.tsinghua.edu.cn/simple/ \  # 清华镜像加速
+            -v  # 显示详细编译日志，便于排查错误
           
-          # 多镜像列表（按优先级排序，依次尝试；可替换为实际可用链接）
-          DM_PYTHON_MIRRORS=(
-            # 镜像1：达梦官网（加浏览器UA绕403）
-            "https://download.dameng.com/eco/adapter/python/$DM_PYTHON_FILENAME"
-            # 镜像2：GitHub第三方可信镜像（示例，需替换为实际可用链接）
-            "https://raw.githubusercontent.com/public-mirrors/dameng-eco/main/python/$DM_PYTHON_FILENAME"
-            # 镜像3：码云第三方镜像（示例，需替换为实际可用链接）
-            "https://gitee.com/public-mirrors/dameng/raw/master/eco/python/$DM_PYTHON_FILENAME"
-            # 镜像4：开源社区镜像（示例，需替换为实际可用链接）
-            "https://mirror.tuna.tsinghua.edu.cn/dameng/eco/python/$DM_PYTHON_FILENAME"
-          )
-          
-          # 浏览器User-Agent（模拟正常访问，绕403拦截）
-          USER_AGENT="Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
-          
-          # 循环尝试下载
-          echo "=== 开始下载dmPython源码（多镜像冗余） ==="
-          for MIRROR_URL in "${DM_PYTHON_MIRRORS[@]}"; do
-            echo "尝试从镜像下载：$MIRROR_URL"
-            # 执行下载：加UA、重试、超时
-            if wget --user-agent="$USER_AGENT" \
-                   --retry-connrefused --waitretry=3 --read-timeout=30 --timeout=15 -t 5 \
-                   "$MIRROR_URL" -O "$DM_PYTHON_FILENAME"; then
-              
-              # 验证文件大小（避免下载到403页面HTML）
-              FILE_SIZE=$(stat -c "%s" "$DM_PYTHON_FILENAME")
-              if [ "$FILE_SIZE" -ge "$MIN_EXPECTED_SIZE" ]; then
-                echo "✅ 下载成功！文件大小：$FILE_SIZE 字节（符合预期）"
-                DOWNLOAD_SUCCESS=1
-                break
-              else
-                echo "警告：文件大小异常（$FILE_SIZE 字节 < 预期 $MIN_EXPECTED_SIZE 字节），可能是错误页面"
-                rm -f "$DM_PYTHON_FILENAME"  # 删除无效文件
-                continue
-              fi
-            fi
-            echo "❌ 该镜像下载失败，尝试下一个"
-          done
-          
-          # 所有镜像失败的处理（提供紧急方案）
-          if [ "$DOWNLOAD_SUCCESS" -ne 1 ] || [ ! -f "$DM_PYTHON_FILENAME" ]; then
-            echo "错误：所有dmPython源码镜像均下载失败！"
-            echo "=== 紧急解决方案 ==="
-            echo "1. 手动访问达梦官网下载源码：https://eco.dameng.com/adapter/"
-            echo "2. 将下载的[$DM_PYTHON_FILENAME]上传到你的GitHub仓库根目录"
-            echo "3. 修改本步骤为以下代码，直接使用仓库内的源码包："
-            echo "   if [ ! -f \"./$DM_PYTHON_FILENAME\" ]; then"
-            echo "     echo \"错误：仓库内未找到dmPython源码包，请手动上传！\""
-            echo "     exit 1"
-            echo "   fi"
-            exit 1
-          fi
-          
-          # 5. 解压源码（动态识别目录，兼容不同命名）
-          echo "解压dmPython源码包..."
-          unzip -q "$DM_PYTHON_FILENAME" -d dmPython-src
-          # 找到解压后的源码目录（如dmPython-2.5.22-src）
-          DM_SRC_DIR=$(find dmPython-src -maxdepth 1 -type d -name "dmPython-*" | head -n 1)
-          if [ -z "$DM_SRC_DIR" ] || [ ! -d "$DM_SRC_DIR" ]; then
-            echo "错误：未找到dmPython源码目录"
-            ls -l dmPython-src  # 打印解压后的内容
-            exit 1
-          fi
-          echo "进入dmPython源码目录：$DM_SRC_DIR"
-          cd "$DM_SRC_DIR"
-          
-          # 6. 编译安装dmPython（传递musl参数）
-          echo "用musl-gcc编译dmPython..."
-          CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC" \  # 关联Python头文件和系统头文件
-          LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \  # 关联Python库和libaio
-          CC="musl-gcc" \  # 强制musl编译器
-          $PYTHON_BIN setup.py install  # 执行安装
-          
-          # 7. 返回项目根目录
-          cd ../..
-          
-          # 8. 验证dmPython安装成功
+          # 5. 验证dmPython安装成功
           echo "验证dmPython安装..."
           if ! $PYTHON_BIN -c "import dmPython" &> /dev/null; then
             echo "错误：dmPython安装失败"
-            # 打印详细错误信息（定位问题）
+            # 打印详细错误信息（定位编译或依赖问题）
             echo "dmPython导入错误详情："
             $PYTHON_BIN -c "import dmPython" 2>&1
             exit 1
           fi
-          echo "✅ dmPython 2.5.22 源码编译安装完成"
+          # 打印dmPython版本，确认安装正确
+          DM_VERSION=$($PYTHON_BIN -c 'import dmPython; print(f"dmPython版本：{dmPython.__version__}")')
+          echo "✅ $DM_VERSION 安装完成（musl适配成功）"
 
       - name: 安装其他Python依赖（固定版本）
         run: |
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           
-          # 安装无编译依赖的Python包（指定PyPI官方源，避免镜像问题）
+          # 安装无编译依赖的Python包（用清华镜像加速）
           echo "安装其他Python依赖..."
           $PYTHON_BIN -m pip install \
             pandas==2.1.4 \     # 数据处理（固定版本，兼容Python 3.10）
@@ -288,7 +226,7 @@ jobs:
             werkzeug==2.3.7 \    # Flask依赖（版本匹配，避免冲突）
             pyinstaller==6.16.0 \# 打包工具（固定版本，确保兼容性）
             --no-cache-dir \     # 禁用缓存，避免旧版本干扰
-            -i https://pypi.org/simple/  # 指定官方源，确保包完整
+            -i https://pypi.tuna.tsinghua.edu.cn/simple/  # 清华镜像加速
           
           # 验证所有依赖导入正常
           echo "验证所有依赖..."
@@ -410,7 +348,7 @@ jobs:
             
             ## 依赖说明
             - Python版本：3.10.12（musl静态版，无系统依赖）
-            - dmPython版本：2.5.22（源码编译，适配musl）
+            - dmPython版本：2.5.16（pip源码编译，适配musl）
             - 数据库配置：需在main.py中更新`conn_params`为实际达梦地址/账号
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub自动提供的令牌（无需手动配置）
