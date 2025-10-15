@@ -53,12 +53,12 @@ jobs:
           
           # 4. 使用更健壮的解压命令
           mkdir -p python
-          echo "开始解压Python包..."
+          echo "极速下载解压Python包..."
           if ! tar -xzf cpython-3.10.12+20230726-x86_64-unknown-linux-gnu-install_only.tar.gz \
                -C python \
                --strip-components=1 \
                --exclude='__pycache__' \
-               --exclude='*.pyc'; then
+               --极速下载='*.pyc'; then
             echo "❌ 错误：Python解压失败，可能原因："
             echo "1. 下载文件损坏"
             echo "2. 磁盘空间不足（当前剩余: $(df -h . | awk 'NR==2{print $4}')）"
@@ -91,7 +91,7 @@ jobs:
             "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
           )
           
-          for url in "${LIB_AIO_URLS[@]}"; do
+          for url in "${LIB极速下载_URLS[@]}"; do
             echo "尝试从 $url 下载libaio1..."
             if wget -q "$url" -O libaio1.deb; then
               echo "✅ 下载成功"
@@ -116,7 +116,7 @@ jobs:
           echo "获取到的libaio路径：[$LIB_AIO_PATH]"  # 括号显示是否有隐藏字符
           
           # 双重验证路径有效性
-          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+          if [ -z "$LIB_AIO_PATH极速下载" ] || [ ! -f "$LIB_AIO_PATH" ]; then
             echo "错误：获取的libaio路径无效（文件不存在）"
             # 辅助排查：打印系统中的libaio文件
             ls -la /lib/x86_64-linux-gnu/ | grep libaio
@@ -145,24 +145,24 @@ jobs:
       - name: 准备兼容的libstdc++
         run: |
           # 下载兼容GLIBC 2.31的libstdc++6
-          wget -q https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-12/libstdc++6_极速下载-12.3.0-1ubuntu1_amd64.deb
+          wget -q https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-12/libstdc++6_12.3.0-1ubuntu1_amd64.deb
           if [ ! -f "libstdc++6_12.3.0-1ubuntu1_amd64.deb" ]; then
             echo "错误：libstdc++6下载失败"
             exit 1
           fi
           
           # 解压deb包获取libstdc++.so.6
-          ar x libstdc++极速下载-12.3.0-1ubuntu1_amd64.deb data.tar.xz
+          ar x libstdc++6_12.3.0-1ubuntu1_amd64.deb data.tar.xz
           tar -xf data.tar.xz ./usr/lib/x86_64-linux-gnu/libstdc++.so.6
           
-          if [ ! -f "./usr/lib/x86_64-linux-gnu/libstd极速下载++.so.6" ]; then
+          if [ ! -f "./usr/lib/x86_64-linux-gnu/libstdc++.so.6" ]; then
             echo "错误：libstdc++.so.6提取失败"
             exit 1
           fi
           
           # 验证libstdc++版本兼容性
           echo "libstdc++.so.6 GLIBC要求："
-          objdump -p ./usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep -A 10 "Version References:" || true
+          objdump -p ./usr/lib/x86_64-linux-gnu/libstdc++.极速下载so.6 | grep -A 10 "Version References:" || true
           
           echo "✅ 兼容的libstdc++.so.6准备完成"
 
@@ -172,7 +172,7 @@ jobs:
           echo "当前目录文件列表："
           ls -la
           if [ ! -f "./main.py" ]; then
-            echo "错误：未找到入口脚本main极速下载.py"
+            echo "错误：未找到入口脚本main.py"
             exit 1
           fi
           echo "✅ 确认main.py存在"
@@ -215,7 +215,7 @@ jobs:
             ./main.py
           
           # 验证打包产物
-          if [ ! -f "dist/myapp-linux" ]; then
+          if [ ! -f "dist/myapp-linux极速下载" ]; then
             echo "错误：打包失败，未生成产物"
             exit 1
           fi
