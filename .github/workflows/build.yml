@@ -3,8 +3,8 @@ name: 达梦API服务打包（musl静态链接，全Linux兼容）
 on:
   push:
     tags:
-      - 'v*.*.*'  # 标签推送触发
-  workflow_dispatch:  # 手动触发
+      - 'v*.*.*'
+  workflow_dispatch:
 
 jobs:
   build-linux:
@@ -13,7 +13,7 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装基础工具（musl+编译依赖）
+      - name: 安装基础工具
         run: |
           sudo apt-get update -y
           sudo apt-get install -y musl-tools tree wget findutils
@@ -25,7 +25,7 @@ jobs:
           done
           echo "✅ 基础工具安装完成"
 
-      - name: 配置静态Python（适配python3命名）
+      - name: 配置静态Python
         run: |
           PYTHON_TAR="cpython-3.10.12+20230726-x86_64-unknown-linux-musl-install_only.tar.gz"
           PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20230726/$PYTHON_TAR"
@@ -119,7 +119,7 @@ jobs:
           echo "✅ libaio编译完成"
           cd ..
 
-      - name: 用pip安装dmPython（修复语法错误）
+      - name: 动态获取dmPython可用版本并安装
         run: |
           # 读取环境变量
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
@@ -136,19 +136,49 @@ jobs:
             echo "✅ 依赖路径[$path]有效"
           done
           
-          # 升级pip（清华镜像加速）
+          # 升级pip
           echo "升级pip..."
-          $PYTHON_BIN -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple/
+          $PYTHON_BIN -m pip install --upgrade pip -i https://pypi.org/simple/
           
-          # 核心修复：修正pip命令格式（反斜杠后无空格，参数连续）
-          echo "用pip安装dmPython（强制源码编译）..."
+          # 核心改进：动态检测dmPython可用版本（优先官方源）
+          echo "检测dmPython可用版本..."
+          # 从官方源获取所有可用版本（排除预发布版）
+          DM_VERSIONS=$($PYTHON_BIN -c "
+          import json
+          import urllib.request
+          url = 'https://pypi.org/pypi/dmPython/json'
+          try:
+              with urllib.request.urlopen(url) as f:
+                  data = json.load(f)
+                  versions = list(data['releases'].keys())
+                  # 过滤出稳定版（不含rc/beta等）
+                  stable_versions = [v for v in versions if 'rc' not in v and 'beta' not in v and 'alpha' not in v]
+                  # 按版本号降序排序
+                  stable_versions.sort(key=lambda x: list(map(int, x.split('.'))), reverse=True)
+                  print('\n'.join(stable_versions))
+          except Exception as e:
+              print(f'错误：{e}')
+              exit(1)
+          ")
+          
+          # 检查是否获取到版本列表
+          if [ -z "$DM_VERSIONS" ] || ! echo "$DM_VERSIONS" | grep -q '[0-9]'; then
+            echo "错误：无法获取dmPython可用版本"
+            exit 1
+          fi
+          
+          # 选择最新可用版本
+          DM_VERSION=$(echo "$DM_VERSIONS" | head -n 1)
+          echo "发现最新dmPython稳定版：$DM_VERSION，开始安装..."
+          
+          # 用官方源安装（确保版本完整性）
           CC="musl-gcc" \
           CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC" \
           LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
-          $PYTHON_BIN -m pip install dmPython==2.5.16 \
+          $PYTHON_BIN -m pip install dmPython==$DM_VERSION \
             --no-binary :all: \
             --no-cache-dir \
-            -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
+            -i https://pypi.org/simple/ \
             -v
           
           # 验证安装
@@ -157,8 +187,7 @@ jobs:
             $PYTHON_BIN -c "import dmPython" 2>&1
             exit 1
           fi
-          DM_VERSION=$($PYTHON_BIN -c 'import dmPython; print(f"dmPython版本：{dmPython.__version__}")')
-          echo "✅ $DM_VERSION 安装完成"
+          echo "✅ dmPython $DM_VERSION 安装完成"
 
       - name: 安装其他Python依赖
         run: |
