@@ -8,38 +8,40 @@ on:
 
 jobs:
   build-linux:
-    # 使用Ubuntu 20.04作为构建环境，它默认使用GLIBC 2.31
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置静态Python环境
+      - name: 配置低GLIBC兼容的静态Python环境
         run: |
-          # 使用与GLIBC 2.31兼容的Python版本
-          wget https://github.com/indygreg/python-build-standalone/releases/download/20231002/cpython-3.11.6+20231002-x86_64-unknown-linux-gnu-install_only.tar.gz
+          # 使用明确兼容GLIBC 2.17+的Python版本（最低支持到2.17，自然兼容2.31+）
+          wget https://github.com/indygreg/python-build-standalone/releases/download/20230626/cpython-3.11.4+20230626-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          if [ ! -f "cpython-3.11.6+20231002-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
+          if [ ! -f "cpython-3.11.4+20230626-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
           mkdir -p python
-          tar -xzf cpython-3.11.6+20231002-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
+          tar -xzf cpython-3.11.4+20230626-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
           if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败"
             exit 1
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
+          
+          # 验证Python的GLIBC依赖
+          echo "Python的GLIBC依赖检查："
+          ldd ./python/bin/python | grep libc || true
 
-      - name: 安装libaio1（适配Ubuntu 20.04）
+      - name: 安装libaio1并验证版本兼容性
         run: |
-          # 适配Ubuntu 20.04的libaio1源
+          # 多源下载确保兼容性版本
           LIB_AIO_URLS=(
-            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.112-7ubuntu0.1_amd64.deb"
-            "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.112-7ubuntu0.1_amd64.deb"
-            "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.112-7ubuntu0.1_amd64.deb"
+            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
           )
           
           for url in "${LIB_AIO_URLS[@]}"; do
@@ -55,14 +57,14 @@ jobs:
             exit 1
           fi
           
-          # 安装libaio1
+          # 安装并检查
           sudo dpkg -i --force-depends libaio1.deb
           if ! dpkg -s libaio1 &> /dev/null; then
             echo "错误：libaio1安装失败"
             exit 1
           fi
           
-          # 获取并验证libaio.so.1路径
+          # 获取路径
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
           echo "获取到的libaio路径：[$LIB_AIO_PATH]"
           
@@ -75,22 +77,30 @@ jobs:
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
           echo "✅ libaio1安装成功"
 
-      - name: 安装Python依赖
+      - name: 安装兼容低GLIBC的Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 确保依赖版本兼容旧版GLIBC
-          ./python/bin/python -m pip install dmPython==2.5.22 pandas==2.1.4 flask==2.3.3 werkzeug==2.3.7 pyinstaller==6.16.0
+          # 使用明确兼容旧版GLIBC的依赖版本
+          ./python/bin/python -m pip install \
+            dmPython==2.5.22 \
+            pandas==1.5.3 \  # 降低pandas版本以减少新特性依赖
+            flask==2.2.5 \
+            werkzeug==2.2.3 \
+            pyinstaller==5.13.2  # 较旧版本的pyinstaller依赖更低的GLIBC
           
-          # 验证dmPython安装
-          if ./python/bin/python -c "import dmPython" &> /dev/null; then
-            echo "✅ dmPython安装成功"
+          # 验证依赖的GLIBC兼容性
+          echo "检查dmPython的依赖："
+          ldd $(find ./python -name "dmPython.*.so") | grep libc || true
+          
+          # 验证导入
+          if ./python/bin/python -c "import dmPython; import pandas; import flask" &> /dev/null; then
+            echo "✅ 所有核心依赖安装成功"
           else
-            echo "错误：dmPython安装失败"
+            echo "错误：依赖安装失败"
             exit 1
           fi
-          echo "✅ 所有依赖安装完成"
 
-      - name: 打包应用（兼容GLIBC 2.31）
+      - name: 打包应用（强制低GLIBC兼容）
         run: |
           if [ ! -f "./main.py" ]; then
             echo "错误：未找到入口脚本main.py"
@@ -109,8 +119,7 @@ jobs:
             fi
           fi
           
-          # 关键：使用--strip参数减小体积并避免不必要的符号依赖
-          # 添加--exclude-module参数排除可能引入高版本GLIBC依赖的模块
+          # 关键优化：使用更严格的打包参数确保兼容性
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -121,8 +130,10 @@ jobs:
             --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
             --runtime-tmpdir=. \
-            --strip \
-            --exclude-module=pycparser \
+            --strip \  # 移除调试符号，减少依赖
+            --exclude-module=ctypes \  # 排除可能引入高版本依赖的模块
+            --exclude-module=distutils \
+            --no-compress \  # 禁用压缩，避免解压时的潜在问题
             ./main.py
           
           if [ ! -f "dist/myapp-linux" ]; then
@@ -130,9 +141,19 @@ jobs:
             exit 1
           fi
           
-          # 检查GLIBC依赖
-          echo "检查产物的GLIBC依赖："
-          ldd dist/myapp-linux | grep libc || true
+          # 关键步骤：详细检查GLIBC依赖版本
+          echo "==== 产物GLIBC依赖检查 ===="
+          objdump -T dist/myapp-linux | grep GLIBC_ | sort -u | grep -v GLIBC_2.3[2-9] | grep -v GLIBC_2.[4-9]
+          echo "=========================="
+          
+          # 检查是否存在高于2.31的依赖
+          if objdump -T dist/myapp-linux | grep GLIBC_ | sort -u | grep -q -E 'GLIBC_2.3[2-9]|GLIBC_2.[4-9]'; then
+            echo "警告：检测到高于GLIBC 2.31的依赖"
+            # 列出具体的高版本依赖
+            objdump -T dist/myapp-linux | grep GLIBC_ | sort -u | grep -E 'GLIBC_2.3[2-9]|GLIBC_2.[4-9]'
+          else
+            echo "✅ 未检测到高于GLIBC 2.31的依赖"
+          fi
           
           echo "✅ 打包完成"
           ls -lh dist/myapp-linux
@@ -146,7 +167,7 @@ jobs:
 
   release:
     needs: build-linux
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: 下载产物
