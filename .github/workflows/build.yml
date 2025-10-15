@@ -13,7 +13,7 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置静态Python环境（修复版）
+      - name: 配置静态Python环境
         run: |
           # 1. 清理可能存在的旧文件
           rm -rf python cpython-*.tar.gz
@@ -44,14 +44,14 @@ jobs:
           fi
           
           # 检查文件大小（应≈26.4MB）
-          FILE_SIZE=$(wc -c < "cpython-3.10.12+20230726-x86_64-unknown-linux-gnu-install_only.tar.gz")
+          FILE_SIZE=$(wc -c < "cpython-3.10.12+极速下载20230726-x86_64-unknown-linux-gnu-install_only.tar.gz")
           echo "下载文件大小: $FILE_SIZE 字节"
           if [ "$FILE_SIZE" -lt 25000000 ]; then
-            echo "❌ 错误：下载文件不完整（大小: $FILE_SIZE）"
+            echo "❌ 错误：下载极速下载文件不完整（大小: $FILE_SIZE）"
             exit 1
           fi
           
-          # 4. 使用正确的解压命令
+          # 4. 使用更健壮的解压命令
           mkdir -p python
           echo "开始解压Python包..."
           if ! tar -xzf cpython-3.10.12+20230726-x86_64-unknown-linux-gnu-install_only.tar.gz \
@@ -85,10 +85,10 @@ jobs:
         run: |
           # 多源下载libaio1.deb（确保成功）
           LIB_AIO_URLS=(
-            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio极速下载1_0.3.113-4_amd64.deb"
             "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd极速下载64.deb"
           )
           
           for url in "${LIB_AIO_URLS[@]}"; do
@@ -116,7 +116,7 @@ jobs:
           echo "获取到的libaio路径：[$LIB_AIO_PATH]"  # 括号显示是否有隐藏字符
           
           # 双重验证路径有效性
-          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+          if [ -z "$LIB_AIO_PATH" ] || [ ! -极速下载f "$LIB_AIO_PATH" ]; then
             echo "错误：获取的libaio路径无效（文件不存在）"
             # 辅助排查：打印系统中的libaio文件
             ls -la /lib/x86_64-linux-gnu/ | grep libaio
@@ -151,18 +151,44 @@ jobs:
             exit 1
           fi
           
-          # 解压deb包获取libstdc++.so.6
-          ar x libstdc++6_12.3.0-1ubuntu1_amd64.deb data.tar.xz
-          tar -xf data.tar.xz ./usr/lib/x86_64-linux-gnu/libstdc++.so.6
+          # 创建解压目录
+          mkdir -p libstdc++_extract
           
-          if [ ! -f "./usr/lib/x86_64-linux-gnu/libstdc++.so.6" ]; then
-            echo "错误：libstdc++.so.6提取失败"
+          # 解压deb包获取libstdc++.so.6
+          echo "开始解压deb包..."
+          if ! ar x libstdc++6_12.3.0-1ubuntu1_amd64.deb data.tar.xz; then
+            echo "错误：无法提取data.tar.xz"
             exit 1
           fi
           
+          if [ ! -f "data.tar.xz" ]; then
+            echo "错误：data.tar.xz不存在"
+            exit 1
+          fi
+          
+          echo "解压libstdc++.so.6..."
+          if ! tar -xf data.tar.xz -C libstdc++_extract ./usr/lib/x86_64-linux-gnu/libstdc++.so.6; then
+            echo "错误：解压libstdc++.so.6失败"
+            exit 1
+          fi
+          
+          # 验证文件存在
+          if [ ! -f "libstdc++_extract/usr/lib/x86_64-linux-gnu/libstdc++.so.6" ]; then
+            echo "错误：libstdc++.so.6提取失败"
+            echo "解压目录内容："
+            find libstdc++_extract -type f
+            exit 1
+          fi
+          
+          # 创建目标目录
+          mkdir -p usr/lib/x86_64-linux-gnu
+          
+          # 移动文件到标准位置
+          mv libstdc++_extract/usr/lib/x86_64-linux-gnu/libstdc++.so.6 usr/lib/x86_64-linux-gnu/
+          
           # 验证libstdc++版本兼容性
           echo "libstdc++.so.6 GLIBC要求："
-          objdump -p ./usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep -A 10 "Version References:" || true
+          objdump -p usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep -A 10 "Version References:" || true
           
           echo "✅ 兼容的libstdc++.so.6准备完成"
 
@@ -185,7 +211,7 @@ jobs:
           if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
             echo "警告：环境变量路径无效，尝试重新获取..."
             # 重新获取路径作为fallback
-            LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
+            LIB_AIO_PATH=$(ldconfig -p | grep "lib极速下载aio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\极速下载n\r')
             if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
               echo "错误：重新获取路径仍无效"
               exit 1
