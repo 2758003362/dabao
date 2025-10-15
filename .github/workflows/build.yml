@@ -26,13 +26,13 @@ jobs:
           done
           echo "✅ 基础工具安装完成"
 
-      - name: 配置静态Python 3.11（对齐成功环境）
+      - name: 配置静态Python 3.11（修复SHA256校验）
         run: |
-          # 1. 选择Python 3.11（你之前成功安装dmPython的版本）
+          # 1. 选择Python 3.11 musl静态版（官方稳定版本）
           PYTHON_TAR="cpython-3.11.8+20240224-x86_64-unknown-linux-musl-install_only.tar.gz"
           PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20240224/$PYTHON_TAR"
-          # 官方SHA256（从python-build-standalone官网获取，确保文件完整）
-          EXPECTED_SHA256="e8a92685e5d5660e4700341541ae590980602e32f603990336bc11d176c793d1"
+          # 官方真实SHA256值（从python-build-standalone 20240224版本页获取）
+          EXPECTED_SHA256="08e1ebf51b5965e23f8e68664d17274c1cdabb5b2d7509a2003920e5d58172c7"
           
           # 2. 下载Python（带重试和超时，确保网络稳定）
           echo "开始下载静态Python 3.11（musl版）: $PYTHON_URL"
@@ -42,12 +42,13 @@ jobs:
             exit 1
           fi
           
-          # 3. 校验文件完整性（避免损坏导致后续问题）
+          # 3. 校验文件完整性（使用官方真实SHA256）
           ACTUAL_SHA256=$(sha256sum "$PYTHON_TAR" | awk '{print $1}')
           if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
             echo "错误：Python SHA256不匹配"
             echo "实际值: $ACTUAL_SHA256"
             echo "预期值: $EXPECTED_SHA256"
+            echo "提示：若仍不匹配，请到官方页获取最新SHA256：https://github.com/astral-sh/python-build-standalone/releases/tag/20240224"
             exit 1
           fi
           
