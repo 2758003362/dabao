@@ -68,44 +68,78 @@ jobs:
           
           echo "✅ Python配置成功，版本：$(./python/bin/python --version)"
 
-      - name: 安装libaio1（写入环境变量）
+      - name: 安装libaio1（修复下载损坏，增加校验）
         run: |
+          # 核心优化1：增加旧版本仓库作为备用源，确保包存在；显示下载日志
           LIB_AIO_URLS=(
-            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"  # 官方源
+            "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"  # 阿里云源
+            "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"    # 163源
+            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"  # 旧版本备用源
           )
           
+          # 核心优化2：添加重试机制+删除不完整文件+非静默日志
+          DOWNLOAD_SUCCESS=0
           for url in "${LIB_AIO_URLS[@]}"; do
-            echo "尝试从 $url 下载libaio1..."
-            if wget -q "$url" -O libaio1.deb; then
-              echo "✅ 下载成功"
+            echo "=== 尝试从 $url 下载libaio1 ==="
+            # 去掉-q（静默），显示HTTP状态和进度；--tries=3重试3次；超时30秒
+            if wget --tries=3 --timeout=30 -O libaio1.deb "$url"; then
+              echo "✅ libaio1.deb下载成功"
+              DOWNLOAD_SUCCESS=1
               break
+            else
+              echo "⚠️ 该源下载失败，尝试下一个"
+              # 关键：删除不完整文件，避免后续用损坏包安装
+              rm -f libaio1.deb
             fi
           done
           
-          if [ ! -f "libaio1.deb" ]; then
-            echo "错误：所有源均下载失败"
+          # 检查下载结果
+          if [ "$DOWNLOAD_SUCCESS" -ne 1 ] || [ ! -f "libaio1.deb" ]; then
+            echo "❌ 错误：所有源均下载失败，无法获取libaio1.deb"
             exit 1
           fi
           
-          sudo dpkg -i --force-depends libaio1.deb
+          # 核心优化3：下载后验证deb包完整性（避免用损坏包安装）
+          echo "=== 验证libaio1.deb完整性 ==="
+          if ! dpkg-deb --info libaio1.deb &> /dev/null; then
+            echo "❌ 错误：libaio1.deb损坏或不是有效deb包"
+            # 打印文件前100字节，辅助排查是否为HTML错误页
+            echo "文件前100字节内容："
+            head -c 100 libaio1.deb | xxd
+            exit 1
+          fi
+          echo "✅ libaio1.deb完整性验证通过"
+          
+          # 执行安装（保留--force-depends适配Ubuntu 24.04）
+          echo "=== 安装libaio1 ==="
+          if ! sudo dpkg -i --force-depends libaio1.deb; then
+            echo "❌ 错误：libaio1安装失败（可能是系统依赖冲突）"
+            # 显示dpkg详细状态，辅助排查
+            dpkg -l | grep libaio
+            exit 1
+          fi
+          
+          # 验证安装结果
           if ! dpkg -s libaio1 &> /dev/null; then
-            echo "错误：libaio1安装失败"
+            echo "❌ 错误：libaio1安装后未被系统识别"
             exit 1
           fi
           
+          # 获取并验证libaio路径
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
           echo "获取到的libaio路径：[$LIB_AIO_PATH]"
           
           if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "错误：获取的libaio路径无效"
+            echo "❌ 错误：获取的libaio路径无效"
+            # 显示系统中实际的libaio文件，辅助排查
             ls -la /lib/x86_64-linux-gnu/ | grep libaio
             exit 1
           fi
           
+          # 写入环境变量供后续使用
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          echo "✅ libaio1安装成功"
+          echo "✅ libaio1安装成功，路径已写入环境变量"
 
       - name: 安装Python依赖
         run: |
@@ -115,22 +149,19 @@ jobs:
           if ./python/bin/python -c "import dmPython" &> /dev/null; then
             echo "✅ dmPython安装成功"
           else
-            echo "错误：dmPython安装失败"
+            echo "错误：dmPython安装失败（可能是libaio依赖问题）"
             exit 1
           fi
           echo "✅ 所有依赖安装完成"
 
-      - name: 准备兼容的libstdc++（修复404错误，使用旧版本仓库）
+      - name: 准备兼容的libstdc++（修复404错误）
         run: |
-          # 核心修复：使用仍存在于仓库中的libstdc++6版本（12.1.0-2ubuntu1）
-          # 该版本明确支持GLIBC 2.31，且存储在旧版本专用仓库
           LIBSTDC_URLS=(
-            "http://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-12/libstdc++6_12.1.0-2ubuntu1_amd64.deb"  # 旧版本专用仓库（优先）
-            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-12/libstdc++6_12.1.0-2ubuntu1_amd64.deb"  # 清华源备份
-            "https://mirrors.ustc.edu.cn/ubuntu/pool/main/g/gcc-12/libstdc++6_12.1.0-2ubuntu1_amd64.deb"  # 中科大源备份
+            "http://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-12/libstdc++6_12.1.0-2ubuntu1_amd64.deb"
+            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-12/libstdc++6_12.1.0-2ubuntu1_amd64.deb"
+            "https://mirrors.ustc.edu.cn/ubuntu/pool/main/g/gcc-12/libstdc++6_12.1.0-2ubuntu1_amd64.deb"
           )
           
-          # 下载逻辑（保留重试和日志）
           DOWNLOAD_SUCCESS=0
           for url in "${LIBSTDC_URLS[@]}"; do
             echo "=== 尝试从 $url 下载libstdc++6 ==="
@@ -145,69 +176,60 @@ jobs:
           done
           
           if [ "$DOWNLOAD_SUCCESS" -ne 1 ] || [ ! -f "libstdc++6.deb" ]; then
-            echo "❌ 错误：所有源均下载失败，无法获取libstdc++6.deb"
+            echo "❌ 错误：所有源均下载失败"
             exit 1
           fi
           
-          # 验证deb包完整性
-          echo "=== 验证deb包完整性 ==="
+          echo "=== 验证libstdc++6.deb完整性 ==="
           if ! dpkg-deb --info libstdc++6.deb &> /dev/null; then
-            echo "❌ 错误：下载的文件不是有效deb包"
-            echo "文件前100字节内容："
+            echo "❌ 错误：libstdc++6.deb损坏"
             head -c 100 libstdc++6.deb | xxd
             exit 1
           fi
-          echo "✅ deb包完整性验证通过"
+          echo "✅ 完整性验证通过"
           
-          # 清理旧目录并提取文件
           rm -rf libstdc++_extract data.tar.xz
           mkdir -p libstdc++_extract
           
-          echo "=== 提取deb包中的data.tar.xz ==="
+          echo "=== 提取data.tar.xz ==="
           if ! ar x libstdc++6.deb data.tar.xz; then
-            echo "❌ 错误：无法从deb包提取data.tar.xz"
-            echo "deb包内文件列表："
+            echo "❌ 错误：提取data.tar.xz失败"
             ar t libstdc++6.deb
             exit 1
           fi
           
           if [ ! -f "data.tar.xz" ]; then
-            echo "❌ 错误：提取后未找到data.tar.xz"
+            echo "❌ 错误：未找到data.tar.xz"
             exit 1
           fi
           
-          # 解压获取libstdc++.so.6
-          echo "=== 解压data.tar.xz获取libstdc++.so.6 ==="
+          echo "=== 解压libstdc++.so.6 ==="
           if ! tar -xJf data.tar.xz -C libstdc++_extract ./usr/lib/x86_64-linux-gnu/libstdc++.so.6 -v; then
-            echo "❌ 错误：解压libstdc++.so.6失败"
-            echo "data.tar.xz内的目标文件路径："
+            echo "❌ 错误：解压失败"
             tar -tJf data.tar.xz | grep "usr/lib/x86_64-linux-gnu/libstdc++.so.6"
             exit 1
           fi
           
-          # 验证目标文件存在
           TARGET_LIB="libstdc++_extract/usr/lib/x86_64-linux-gnu/libstdc++.so.6"
           if [ ! -f "$TARGET_LIB" ]; then
-            echo "❌ 错误：libstdc++.so.6提取失败"
+            echo "❌ 错误：未提取到libstdc++.so.6"
             find libstdc++_extract -type f
             exit 1
           fi
           
-          # 移动文件并验证兼容性
           mkdir -p usr/lib/x86_64-linux-gnu
           mv "$TARGET_LIB" usr/lib/x86_64-linux-gnu/
           
-          echo "=== 验证libstdc++ GLIBC兼容性 ==="
+          echo "=== 验证GLIBC兼容性 ==="
           GLIBC_REQUIRE=$(objdump -p usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep -A 5 "GLIBC_" | head -10)
           if echo "$GLIBC_REQUIRE" | grep -q "GLIBC_2.31"; then
-            echo "✅ 确认支持GLIBC 2.31，兼容性满足要求"
+            echo "✅ 支持GLIBC 2.31"
           else
             echo "⚠️ 警告：未检测到GLIBC_2.31支持"
-            echo "当前libstdc++依赖的GLIBC版本："
             echo "$GLIBC_REQUIRE"
           fi
           
-          echo "✅ 兼容的libstdc++.so.6准备完成"
+          echo "✅ libstdc++准备完成"
 
       - name: 打包应用（兼容GLIBC 2.31）
         run: |
