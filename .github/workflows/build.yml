@@ -85,35 +85,31 @@ jobs:
           echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
           echo "✅ Python配置完成"
 
-      - name: 编译静态libaio（修复find -exec语法）
+      - name: 编译静态libaio（修复find语法）
         run: |
           wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
           tar -xzf libaio-libaio-0.3.113.tar.gz
           cd libaio-libaio-0.3.113
           
-          # 修复sed分隔符问题
+          # 修复sed分隔符
           sed -i.bak "s|^CC\s*=.*$|CC = musl-gcc|" src/Makefile
           sed -i "s|^CFLAGS\s*=.*$|CFLAGS = -fPIC -static -I/usr/include -D_GNU_SOURCE -Wall|" src/Makefile
           sed -i "s|^LDFLAGS\s*=.*$|LDFLAGS = -static|" src/Makefile
           
-          echo "修改后的Makefile关键配置："
+          echo "修改后的Makefile配置："
           grep -E "^CC|^CFLAGS|^LDFLAGS" src/Makefile
           
-          # 核心修复：将find -exec命令合并为单行，用\;正确终止
-          echo "移除glibc特有头文件依赖..."
+          # 修复find -exec语法
           find src/ -name "*.c" -exec sed -i -e '/#include <bits\/wordsize.h>/d' -e '1i #define __WORDSIZE 64' {} \;
           
-          # 复制头文件
           sudo cp src/libaio.h /usr/include/
           if [ ! -f "/usr/include/libaio.h" ]; then
             echo "错误：libaio.h复制失败"
             exit 1
           fi
           
-          # 编译
           make V=1
           
-          # 查找库文件
           LIB_AIO_SO=$(find src/ -name "libaio.so.*" | sort -V | tail -n 1)
           if [ -z "$LIB_AIO_SO" ] || [ ! -f "$LIB_AIO_SO" ]; then
             echo "错误：未找到libaio库文件"
@@ -121,7 +117,6 @@ jobs:
             exit 1
           fi
           
-          # 安装
           sudo cp "$LIB_AIO_SO" /usr/lib/x86_64-linux-gnu/
           sudo ln -sf "$(basename "$LIB_AIO_SO")" /usr/lib/x86_64-linux-gnu/libaio.so.1
           LIB_AIO_PATH="/usr/lib/x86_64-linux-gnu/libaio.so.1"
@@ -129,13 +124,14 @@ jobs:
           echo "✅ libaio编译完成"
           cd ..
 
-      - name: 用pip源码安装dmPython（2.5.18版本）
+      - name: 从达梦官方源码安装dmPython（绕过PyPI）
         run: |
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           PYTHON_INCLUDE="${{ env.PYTHON_INCLUDE }}"
           PYTHON_LIB="${{ env.PYTHON_LIB }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           
+          # 验证依赖路径
           for path in "$PYTHON_BIN" "$PYTHON_INCLUDE" "$PYTHON_LIB" "$LIB_AIO_PATH"; do
             if [ -z "$path" ] || [ ! -e "$path" ]; then
               echo "错误：依赖路径$path无效"
@@ -143,25 +139,39 @@ jobs:
             fi
           done
           
+          # 升级pip
           $PYTHON_BIN -m pip install --upgrade pip -i https://pypi.org/simple/
           
-          DM_PYTHON_VERSION="2.5.18"
-          echo "安装dmPython==$DM_PYTHON_VERSION..."
+          # 核心修复：从达梦官方Gitee仓库下载源码包（确保有源码）
+          echo "从达梦官方仓库下载dmPython源码..."
+          DM_PYTHON_URL="https://gitee.com/dameng/DM8/raw/master/eco/python/dmPython-2.5.22-src.zip"
+          if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 \
+                   "$DM_PYTHON_URL" -O "dmPython-src.zip"; then
+            echo "错误：dmPython源码包下载失败"
+            exit 1
+          fi
+          
+          # 解压源码
+          unzip -q dmPython-src.zip -d dmPython-src
+          cd dmPython-src/dmPython-2.5.22-src  # 进入源码目录
+          
+          # 传递musl编译参数，手动编译安装
+          echo "用musl-gcc编译dmPython..."
           CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC" \
           LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
           CC="musl-gcc" \
-          $PYTHON_BIN -m pip install dmPython==$DM_PYTHON_VERSION \
-            --no-binary :all: \
-            --no-cache-dir \
-            -i https://pypi.org/simple/ \
-            -v
+          $PYTHON_BIN setup.py install
           
+          cd ../..  # 返回项目根目录
+          
+          # 验证安装
+          echo "验证dmPython安装..."
           if ! $PYTHON_BIN -c "import dmPython" &> /dev/null; then
             echo "错误：dmPython安装失败"
             $PYTHON_BIN -c "import dmPython" 2>&1
             exit 1
           fi
-          echo "✅ dmPython安装完成"
+          echo "✅ dmPython官方源码安装完成"
 
       - name: 安装其他Python依赖
         run: |
