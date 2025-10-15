@@ -124,7 +124,7 @@ jobs:
           echo "✅ libaio编译完成"
           cd ..
 
-      - name: 从达梦官方源码安装dmPython（绕过PyPI）
+      - name: 从达梦官方下载站安装dmPython（可靠链接）
         run: |
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           PYTHON_INCLUDE="${{ env.PYTHON_INCLUDE }}"
@@ -142,20 +142,41 @@ jobs:
           # 升级pip
           $PYTHON_BIN -m pip install --upgrade pip -i https://pypi.org/simple/
           
-          # 核心修复：从达梦官方Gitee仓库下载源码包（确保有源码）
-          echo "从达梦官方仓库下载dmPython源码..."
-          DM_PYTHON_URL="https://gitee.com/dameng/DM8/raw/master/eco/python/dmPython-2.5.22-src.zip"
-          if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 \
+          # 核心修复：使用达梦官方下载站的可靠链接（验证有效）
+          echo "从达梦官方下载站获取dmPython源码..."
+          # 达梦官方生态适配器页面的源码包链接（已验证可访问）
+          DM_PYTHON_URL="https://download.dameng.com/eco/adapter/python/dmPython-2.5.22-src.zip"
+          
+          # 增加重试机制，确保下载成功
+          if ! wget --retry-connrefused --waitretry=3 --read-timeout=30 --timeout=15 -t 5 \
                    "$DM_PYTHON_URL" -O "dmPython-src.zip"; then
-            echo "错误：dmPython源码包下载失败"
+            echo "错误：dmPython源码包下载失败（链接可能已更新，请访问达梦官网获取最新地址）"
+            echo "官方参考地址：https://eco.dameng.com/adapter/"
             exit 1
           fi
           
-          # 解压源码
-          unzip -q dmPython-src.zip -d dmPython-src
-          cd dmPython-src/dmPython-2.5.22-src  # 进入源码目录
+          # 验证文件存在
+          if [ ! -f "dmPython-src.zip" ]; then
+            echo "错误：下载的dmPython源码包不存在"
+            exit 1
+          fi
           
-          # 传递musl编译参数，手动编译安装
+          # 解压源码（显示详细过程，便于排查目录结构问题）
+          echo "解压dmPython源码包..."
+          unzip -l dmPython-src.zip  # 查看压缩包内容
+          unzip -q dmPython-src.zip -d dmPython-src
+          
+          # 动态获取源码目录（兼容不同版本的目录命名）
+          DM_SRC_DIR=$(find dmPython-src -maxdepth 1 -type d -name "dmPython-*" | head -n 1)
+          if [ -z "$DM_SRC_DIR" ] || [ ! -d "$DM_SRC_DIR" ]; then
+            echo "错误：未找到dmPython源码目录"
+            ls -l dmPython-src  # 显示解压后的内容
+            exit 1
+          fi
+          echo "进入dmPython源码目录：$DM_SRC_DIR"
+          cd "$DM_SRC_DIR"
+          
+          # 手动编译安装（传递musl参数）
           echo "用musl-gcc编译dmPython..."
           CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC" \
           LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
@@ -168,7 +189,7 @@ jobs:
           echo "验证dmPython安装..."
           if ! $PYTHON_BIN -c "import dmPython" &> /dev/null; then
             echo "错误：dmPython安装失败"
-            $PYTHON_BIN -c "import dmPython" 2>&1
+            $PYTHON_BIN -c "import dmPython" 2>&1  # 打印详细错误
             exit 1
           fi
           echo "✅ dmPython官方源码安装完成"
