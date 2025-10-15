@@ -1,9 +1,9 @@
-name: 达梦API服务打包（musl静态链接，全Linux兼容）
+name: 达梦API服务打包（兼容GLIBC 2.31 + Ubuntu 24.04）
 
 on:
   push:
     tags:
-      - 'v*.*.*'  # 标签推送触发
+      - 'v*.*.*'  # 标签推送触发构建
   workflow_dispatch:  # 手动触发
 
 jobs:
@@ -13,199 +13,113 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装基础工具（musl+编译依赖）
+      - name: 配置静态Python环境
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y musl-tools tree wget findutils
-          for tool in musl-gcc tree wget find; do
-            if ! command -v $tool &> /dev/null; then
-              echo "错误：工具[$tool]安装失败"
-              exit 1
-            fi
-          done
-          echo "✅ 基础工具安装完成"
-
-      - name: 配置静态Python 3.11（修复SHA256校验）
-        run: |
-          PYTHON_TAR="cpython-3.11.8+20240224-x86_64-unknown-linux-musl-install_only.tar.gz"
-          PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20240224/$PYTHON_TAR"
-          EXPECTED_SHA256="08e1ebf51b5965e23f8e68664d17274c1cdabb5b2d7509a2003920e5d58172c7"
+          wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 \
-                   "$PYTHON_URL" -O "$PYTHON_TAR"; then
+          if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
-          ACTUAL_SHA256=$(sha256sum "$PYTHON_TAR" | awk '{print $1}')
-          if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-            echo "错误：Python SHA256不匹配"
-            echo "实际值: $ACTUAL_SHA256"
-            echo "预期值: $EXPECTED_SHA256"
-            echo "提示：若仍不匹配，请到官方页获取最新SHA256：https://github.com/astral-sh/python-build-standalone/releases/tag/20240224"
-            exit 1
-          fi
+          mkdir -p python
+          tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
-          mkdir -p python-musl
-          if ! tar -xzvf "$PYTHON_TAR" -C python-musl; then
+          if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败"
             exit 1
           fi
-          
-          ALL_PYTHON_FILES=$(find python-musl -name "python*" -type f | sort)
-          PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python3.11" | head -n 1)
-          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python3" | head -n 1)
-          fi
-          
-          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            echo "错误：未找到Python可执行文件"
-            tree python-musl
-            exit 1
-          fi
-          
-          if ! "$PYTHON_BIN" --version &> /dev/null; then
-            echo "错误：[$PYTHON_BIN]无法执行"
-            exit 1
-          fi
-          
-          if ! file "$PYTHON_BIN" | grep -q "statically linked"; then
-            echo "错误：Python不是静态链接版本"
-            exit 1
-          fi
-          
-          PYTHON_INCLUDE=$(dirname "$PYTHON_BIN")/../include/python3.11
-          PYTHON_LIB=$(dirname "$PYTHON_BIN")/../lib/python3.11
-          if [ ! -d "$PYTHON_INCLUDE" ]; then
-            echo "错误：Python头文件目录不存在"
-            exit 1
-          fi
-          echo "PYTHON_BIN=$PYTHON_BIN" >> $GITHUB_ENV
-          echo "PYTHON_INCLUDE=$PYTHON_INCLUDE" >> $GITHUB_ENV
-          echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
-          echo "✅ Python 3.11（musl静态版）配置完成"
-
-      - name: 编译静态libaio（修复find命令语法）
+          echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
+      - name: 安装libaio1（写入环境变量，跨步骤共享）
         run: |
-          wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
-          tar -xzf libaio-libaio-0.3.113.tar.gz
-          cd libaio-libaio-0.3.113
+          # 多源下载libaio1.deb（确保成功）
+          LIB_AIO_URLS=(
+            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+          )
           
-          sed -i.bak "s|^CC\s*=.*$|CC = musl-gcc|" src/Makefile
-          sed -i "s|^CFLAGS\s*=.*$|CFLAGS = -fPIC -static -I/usr/include -D_GNU_SOURCE -Wall|" src/Makefile
-          sed -i "s|^LDFLAGS\s*=.*$|LDFLAGS = -static|" src/Makefile
-          
-          # 修复find命令：无多余反斜杠，-exec正确终止
-          find src/ -name "*.c" -exec sed -i -e '/#include <bits\/wordsize.h>/d' -e '1i #define __WORDSIZE 64' {} \;
-          
-          sudo cp src/libaio.h /usr/include/
-          if [ ! -f "/usr/include/libaio.h" ]; then
-            echo "错误：libaio.h复制失败"
-            exit 1
-          fi
-          
-          make V=1
-          
-          LIB_AIO_SO=$(find src/ -name "libaio.so.*" | sort -V | tail -n 1)
-          if [ -z "$LIB_AIO_SO" ] || [ ! -f "$LIB_AIO_SO" ]; then
-            echo "错误：未找到libaio库文件"
-            ls -l src/
-            exit 1
-          fi
-          
-          sudo cp "$LIB_AIO_SO" /usr/lib/x86_64-linux-gnu/
-          sudo ln -sf "$(basename "$LIB_AIO_SO")" /usr/lib/x86_64-linux-gnu/libaio.so.1
-          LIB_AIO_PATH="/usr/lib/x86_64-linux-gnu/libaio.so.1"
-          echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          echo "✅ libaio编译完成"
-          cd ..
-
-      - name: 用pip安装dmPython（修复命令格式，强制源码编译）
-        run: |
-          # 读取环境变量
-          PYTHON_BIN="${{ env.PYTHON_BIN }}"
-          PYTHON_INCLUDE="${{ env.PYTHON_INCLUDE }}"
-          PYTHON_LIB="${{ env.PYTHON_LIB }}"
-          LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
-          
-          # 验证依赖路径
-          for path in "$PYTHON_BIN" "$PYTHON_INCLUDE" "$PYTHON_LIB" "$LIB_AIO_PATH"; do
-            if [ -z "$path" ] || [ ! -e "$path" ]; then
-              echo "错误：依赖路径[$path]无效"
-              exit 1
-            fi
-            echo "✅ 依赖路径[$path]有效"
-          done
-          
-          # 升级pip到25.2（严谨格式，避免多余空格）
-          echo "升级pip到25.2版本..."
-          $PYTHON_BIN -m pip install pip==25.2 -i https://pypi.org/simple/
-          
-          # 核心修复：pip命令格式严谨化（反斜杠后无空格，参数无空行）
-          echo "用pip安装dmPython==2.5.22（强制源码编译）..."
-          CC="musl-gcc" CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC" LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
-          $PYTHON_BIN -m pip install dmPython==2.5.22 \
-            --no-binary :all: \
-            --no-cache-dir \
-            -i https://pypi.org/simple/ \
-            -v
-          
-          # 验证安装
-          if ! $PYTHON_BIN -c "import dmPython" &> /dev/null; then
-            echo "错误：dmPython安装失败"
-            $PYTHON_BIN -c "import dmPython" 2>&1
-            exit 1
-          fi
-          DM_VERSION=$($PYTHON_BIN -c 'import dmPython; print(f"dmPython版本：{dmPython.__version__}")')
-          echo "✅ $DM_VERSION 安装完成"
-
-      - name: 安装其他Python依赖（完全对齐成功环境）
-        run: |
-          PYTHON_BIN="${{ env.PYTHON_BIN }}"
-          
-          # 依赖安装命令格式严谨化
-          echo "安装其他Python依赖..."
-          $PYTHON_BIN -m pip install \
-            pandas==2.1.4 \
-            flask==2.3.3 \
-            werkzeug==2.3.7 \
-            pyinstaller==6.16.0 \
-            --no-cache-dir \
-            -i https://pypi.org/simple/
-          
-          # 验证依赖
-          for lib in dmPython pandas flask werkzeug; do
-            if ! $PYTHON_BIN -c "import $lib" &> /dev/null; then
-              echo "错误：[$lib]导入失败"
-              $PYTHON_BIN -c "import $lib" 2>&1
-              exit 1
+          for url in "${LIB_AIO_URLS[@]}"; do
+            echo "尝试从 $url 下载libaio1..."
+            if wget -q "$url" -O libaio1.deb; then
+              echo "✅ 下载成功"
+              break
             fi
           done
-          echo "✅ 所有依赖安装完成"
-
-      - name: 静态打包应用（生成全Linux兼容产物）
-        run: |
-          if [ ! -f "./main.py" ]; then
-            echo "错误：未找到main.py"
+          
+          if [ ! -f "libaio1.deb" ]; then
+            echo "错误：所有源均下载失败"
             exit 1
           fi
           
-          PYTHON_BIN="${{ env.PYTHON_BIN }}"
-          PYTHON_LIB="${{ env.PYTHON_LIB }}"
-          LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
+          # 强制安装（适配Ubuntu 24.04）
+          sudo dpkg -i --force-depends libaio1.deb
+          if ! dpkg -s libaio1 &> /dev/null; then
+            echo "错误：libaio1安装失败"
+            exit 1
+          fi
           
-          # 二次验证libaio路径
+          # 关键：获取并验证libaio.so.1路径，写入环境变量
+          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
+          echo "获取到的libaio路径：[$LIB_AIO_PATH]"  # 括号显示是否有隐藏字符
+          
+          # 双重验证路径有效性
           if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+            echo "错误：获取的libaio路径无效（文件不存在）"
+            # 辅助排查：打印系统中的libaio文件
+            ls -la /lib/x86_64-linux-gnu/ | grep libaio
+            exit 1
+          fi
+          
+          # 写入GitHub环境变量，供后续步骤使用
+          echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
+          echo "✅ libaio1安装成功，路径已写入环境变量"
+      - name: 安装Python依赖
+        run: |
+          ./python/bin/python -m pip install --upgrade pip
+          # 固定依赖版本，避免兼容性问题
+          ./python/bin/python -m pip install dmPython==2.5.22 pandas==2.1.4 flask==2.3.3 werkzeug==2.3.7 pyinstaller==6.16.0
+          
+          # 验证dmPython能否正常导入（核心依赖）
+          if ./python/bin/python -c "import dmPython" &> /dev/null; then
+            echo "✅ dmPython安装成功"
+          else
+            echo "错误：dmPython安装失败（可能是libaio依赖问题）"
+            exit 1
+          fi
+          echo "✅ 所有依赖安装完成"
+      - name: 打包应用（最终稳定版）
+        run: |
+          # 验证入口脚本存在
+          echo "当前目录文件列表："
+          ls -la
+          if [ ! -f "./main.py" ]; then
+            echo "错误：未找到入口脚本main.py"
+            exit 1
+          fi
+          echo "✅ 确认main.py存在"
+          
+          # 从环境变量获取libaio路径，带fallback机制
+          LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
+          echo "从环境变量获取的libaio路径：[$LIB_AIO_PATH]"
+          
+          # 二次验证，防止环境变量传递失败
+          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+            echo "警告：环境变量路径无效，尝试重新获取..."
+            # 重新获取路径作为fallback
             LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
             if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-              echo "错误：libaio路径无效"
+              echo "错误：重新获取路径仍无效"
               exit 1
             fi
+            echo "fallback成功，路径：$LIB_AIO_PATH"
           fi
           
-          # 打包命令
-          $PYTHON_BIN -m PyInstaller --onefile --name myapp-linux \
-            --paths="$PYTHON_LIB/site-packages" \
+          # 执行打包（携带所有依赖）
+          echo "开始打包，使用libaio路径：$LIB_AIO_PATH"
+          ./python/bin/pyinstaller --onefile --name myapp-linux \
+            --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
@@ -213,25 +127,19 @@ jobs:
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
-            --noupx \
             ./main.py
           
+          # 验证打包产物
           if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：打包失败"
-            if [ -f "build/myapp-linux/warn-myapp-linux.txt" ]; then
-              cat build/myapp-linux/warn-myapp-linux.txt
-            fi
+            echo "错误：打包失败，未生成产物"
             exit 1
           fi
-          
-          echo "产物信息："
-          file dist/myapp-linux
-          echo "✅ 打包完成"
-
+          echo "✅ 打包完成，产物信息："
+          ls -lh dist/myapp-linux  # 打印产物大小和权限
       - name: 保存打包产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-musl-static
+          name: myapp-static
           path: dist/myapp-linux
           retention-days: 7
 
@@ -243,13 +151,12 @@ jobs:
       - name: 下载产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-musl-static
+          name: myapp-static
 
       - name: 创建GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: myapp-linux
           generate_release_notes: true
-          name: "v${{ github.ref_name }}（musl静态版，全Linux兼容）"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
