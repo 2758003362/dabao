@@ -3,12 +3,12 @@ name: 达梦API服务打包（兼容GLIBC 2.31 + Ubuntu 24.04）
 on:
   push:
     tags:
-      - 'v*.*.*'  # 标签推送触发构建
-  workflow_dispatch:  # 手动触发
+      - 'v*.*.*'
+  workflow_dispatch:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # 即Ubuntu 24.04
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
@@ -18,35 +18,22 @@ jobs:
           PYTHON_URLS=(
             "https://github.com/astral-sh/python-build-standalone/releases/download/20240224/cpython-3.10.13+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz"
             "https://github.com/astral-sh/python-build-standalone/releases/download/20240506/cpython-3.11.9+20240506-x86_64-unknown-linux-gnu-install_only.tar.gz"
-            "https://github.com/astral-sh/python-build-standalone/releases/download/20240224/cpython-3.9.19+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz"
           )
           
           filename=""
           for url in "${PYTHON_URLS[@]}"; do
             current_filename=$(basename "$url")
-            echo "=== 尝试下载Python: $url ==="
+            echo "=== 下载Python: $url ==="
             rm -f "$current_filename"
-            
             if wget -v --timeout=30 --tries=5 "$url" -O "$current_filename"; then
-              file_size=$(du -m "$current_filename" | cut -f1)
-              if [ "$file_size" -lt 25 ]; then
-                echo "警告：文件过小，跳过"
-                rm -f "$current_filename"
-                continue
+              if [ $(du -m "$current_filename" | cut -f1) -ge 25 ] && file "$current_filename" | grep -qi "gzip"; then
+                echo "✅ Python下载成功"
+                filename="$current_filename"
+                break
               fi
-              
-              file_type=$(file "$current_filename" | grep -i "gzip compressed data")
-              if [ -z "$file_type" ]; then
-                echo "警告：非gzip包，跳过"
-                rm -f "$current_filename"
-                continue
-              fi
-              
-              echo "✅ Python下载成功（$file_size MB）"
-              filename="$current_filename"
-              break
+              echo "警告：文件无效，跳过"
+              rm -f "$current_filename"
             fi
-            echo "❌ 该链接失败，尝试下一个"
           done
           
           if [ -z "$filename" ]; then
@@ -54,103 +41,83 @@ jobs:
             exit 1
           fi
           
-          echo "=== 解压Python ==="
           mkdir -p python
-          if ! tar -xzvf "$filename" -C python --strip-components=1 --warning=no-unknown-keyword --overwrite; then
+          tar -xzvf "$filename" -C python --strip-components=1 --warning=no-unknown-keyword --overwrite
+          if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败"
             exit 1
           fi
-          
-          if [ ! -f "./python/bin/python" ]; then
-            echo "错误：未找到python可执行文件"
-            exit 1
+          echo "✅ Python配置完成：$(./python/bin/python --version)"
+
+      - name: 安装libaio1（适配Ubuntu 24.04最新版本）
+        run: |
+          echo "=== 适配Ubuntu 24.04安装libaio1 ==="
+          # 关键：先确认系统是否有libaio1包，避免盲目安装
+          apt_cache_result=$(apt-cache search libaio1 | grep -w "libaio1")
+          if [ -z "$apt_cache_result" ]; then
+            echo "⚠️ 系统未搜索到libaio1，尝试添加universal源（Ubuntu 24.04默认可能未启用）"
+            # 启用universal源（libaio1在universal仓库中）
+            sudo sed -i '/^#\s*deb .* universe/s/^#//' /etc/apt/sources.list
+            sudo apt-get update -y
           fi
           
-          python_version=$(./python/bin/python --version 2>&1)
-          echo "✅ Python配置完成：$python_version"
-
-      - name: 安装libaio1（修复包损坏问题）
-        run: |
-          # 方案1：优先尝试apt安装（最可靠，自动处理完整性）
-          echo "=== 优先尝试apt安装libaio1 ==="
-          if sudo apt-get update && sudo apt-get install -y libaio1; then
-            echo "✅ apt安装libaio1成功"
+          # 方案1：优先安装Ubuntu 24.04默认的libaio1版本（无需指定旧版本）
+          if sudo apt-get install -y libaio1; then
+            echo "✅ apt安装libaio1成功（版本：$(dpkg -s libaio1 | grep Version | awk '{print $2}')）"
           else
-            echo "⚠️ apt安装失败，尝试手动下载deb包"
-            # 方案2：手动下载，更换可靠源+完整性校验
+            echo "⚠️ apt安装失败，手动下载Ubuntu 24.04对应的libaio1版本"
+            # 方案2：手动下载Ubuntu 24.04（noble）的libaio1（版本0.3.113-5，当前有效）
             LIB_AIO_URLS=(
-              "http://security.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"  # Ubuntu安全源（最稳定）
-              "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"  # 清华源
-              "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"  # 网易源
-              "https://mirror.sjtu.edu.cn/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"  # 上海交大源
+              "http://archive.ubuntu.com/ubuntu/pool/universe/liba/libaio/libaio1_0.3.113-5_amd64.deb"  # 官方24.04源
+              "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/universe/liba/libaio/libaio1_0.3.113-5_amd64.deb"  # 清华24.04源
+              "https://launchpad.net/ubuntu/+archive/primary/+files/libaio1_0.3.113-5_amd64.deb"  # Launchpad官方包
             )
             
             deb_downloaded=false
             for url in "${LIB_AIO_URLS[@]}"; do
-              echo "=== 尝试下载libaio1: $url ==="
-              rm -f libaio1.deb  # 清理旧文件
-              
-              # 下载并显示进度（便于排查是否中断）
+              echo "=== 下载libaio1（24.04版本）: $url ==="
+              rm -f libaio1.deb
               if wget --progress=bar:force "$url" -O libaio1.deb; then
-                # 校验1：文件大小（正常约10KB，过小则损坏）
-                file_size=$(du -k libaio1.deb | cut -f1)
-                if [ "$file_size" -lt 10 ]; then
-                  echo "警告：deb包过小（$file_size KB），视为损坏"
-                  continue
-                fi
-                
-                # 校验2：deb包有效性（用dpkg-deb检查是否完整）
-                if dpkg-deb --info libaio1.deb &> /dev/null; then
-                  echo "✅ libaio1.deb下载并校验成功"
+                # 校验：deb包大小约12KB，且结构有效
+                if [ $(du -k libaio1.deb | cut -f1) -ge 10 ] && dpkg-deb --info libaio1.deb &> /dev/null; then
+                  echo "✅ libaio1.deb下载成功"
                   deb_downloaded=true
                   break
-                else
-                  echo "警告：deb包无效，跳过"
-                  rm -f libaio1.deb
                 fi
+                echo "警告：deb包无效，跳过"
+                rm -f libaio1.deb
               fi
-              echo "❌ 该链接下载失败"
             done
             
-            # 检查手动下载结果
-            if [ "$deb_downloaded" = false ] || [ ! -f "libaio1.deb" ]; then
-              echo "错误：所有libaio1下载方式均失败"
+            if [ "$deb_downloaded" = false ]; then
+              echo "错误：所有libaio1下载失败"
               exit 1
             fi
             
-            # 安装校验后的deb包
-            echo "=== 安装手动下载的libaio1.deb ==="
-            if ! sudo dpkg -i libaio1.deb; then
-              # 尝试修复依赖（若有依赖问题）
-              echo "尝试修复依赖并重新安装..."
-              sudo apt-get -f install -y
-              if ! sudo dpkg -i libaio1.deb; then
-                echo "错误：libaio1.deb安装失败"
-                exit 1
-              fi
+            # 安装24.04版本的deb包
+            sudo dpkg -i libaio1.deb || {
+              echo "尝试修复依赖..."
+              sudo apt-get -f install -y && sudo dpkg -i libaio1.deb
+            }
+            if [ $? -ne 0 ]; then
+              echo "错误：libaio1.deb安装失败"
+              exit 1
             fi
           fi
           
-          # 验证安装结果+获取路径
-          echo "=== 验证libaio1安装 ==="
+          # 验证并获取libaio.so.1路径
           if ! dpkg -s libaio1 &> /dev/null; then
-            echo "错误：libaio1安装后未检测到"
+            echo "错误：libaio1未安装成功"
             exit 1
           fi
-          
-          # 获取libaio.so.1路径（兼容不同系统位置）
           LIB_AIO_PATH=$(find /lib/x86_64-linux-gnu/ /usr/lib/x86_64-linux-gnu/ -name "libaio.so.1" | head -n 1)
-          echo "获取到的libaio路径：[$LIB_AIO_PATH]"
-          
           if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "错误：未找到libaio.so.1文件"
-            ls -la /lib/x86_64-linux-gnu/ | grep libaio  # 辅助排查
+            echo "错误：未找到libaio.so.1"
+            ls -la /lib/x86_64-linux-gnu/ | grep libaio
             exit 1
           fi
-          
-          # 写入环境变量供后续使用
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          echo "✅ libaio1安装完成，路径已保存"
+          echo "✅ libaio1安装完成，路径：$LIB_AIO_PATH"
 
       - name: 安装Python依赖
         run: |
@@ -162,42 +129,29 @@ jobs:
             werkzeug==2.2.3 \
             pyinstaller==5.13.2
           
-          # 验证dmPython（核心依赖）
-          if ./python/bin/python -c "import dmPython" &> /dev/null; then
-            echo "✅ dmPython导入成功"
-          else
-            echo "错误：dmPython导入失败（可能是libaio依赖问题）"
+          if ! ./python/bin/python -c "import dmPython"; then
+            echo "错误：dmPython导入失败"
             exit 1
           fi
-          echo "✅ 所有依赖安装完成"
+          echo "✅ 所有依赖安装成功"
 
       - name: 打包应用
         run: |
           if [ ! -f "./main.py" ]; then
-            echo "错误：未找到入口脚本main.py"
+            echo "错误：未找到main.py"
             exit 1
           fi
           
-          LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
-          echo "使用libaio路径：$LIB_AIO_PATH"
-          
-          # 打包（适配Python 3.10/3.11/3.9路径）
           python_lib_path=$(find ./python/lib -name "python3.*" -type d | head -n 1)/site-packages
-          echo "Python依赖路径：$python_lib_path"
-          
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths="$python_lib_path" \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
             --hidden-import=pandas \
-            --hidden-import=pandas.core \
-            --hidden-import=pandas.io \
-            --add-binary="$LIB_AIO_PATH:." \
+            --add-binary="${{ env.LIB_AIO_PATH }}:." \
             --runtime-tmpdir=. \
             --strip \
-            --exclude-module=ctypes \
-            --exclude-module=distutils \
             --no-compress \
             ./main.py
           
@@ -206,16 +160,12 @@ jobs:
             exit 1
           fi
           
-          # 检查GLIBC依赖
-          echo "==== 产物GLIBC依赖检查 ===="
-          objdump -T dist/myapp-linux | grep GLIBC_ | sort -u | grep -v GLIBC_2.3[2-9] | grep -v GLIBC_2.[4-9]
-          
-          if objdump -T dist/myapp-linux | grep GLIBC_ | sort -u | grep -q -E 'GLIBC_2.3[2-9]|GLIBC_2.[4-9]'; then
-            echo "⚠️  警告：存在高于GLIBC 2.31的依赖"
+          # 验证GLIBC依赖
+          if objdump -T dist/myapp-linux | grep GLIBC_ | grep -q -E 'GLIBC_2.3[2-9]|GLIBC_2.[4-9]'; then
+            echo "⚠️ 存在高于GLIBC 2.31的依赖"
           else
             echo "✅ 无高于GLIBC 2.31的依赖"
           fi
-          
           echo "✅ 打包完成"
           ls -lh dist/myapp-linux
 
