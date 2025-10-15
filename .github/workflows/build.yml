@@ -66,13 +66,18 @@ jobs:
             exit 1
           fi
           
-          # 5. 双重验证解压结果
-          if [ ! -f "./python/bin/python" ]; then
+          # 5. 双重验证解压结果 - 修复：检查正确的可执行文件名
+          if [ ! -f "./python/bin/python3.10" ]; then
             echo "❌ 错误：Python可执行文件不存在"
             echo "解压目录内容："
             ls -la python/bin/
             exit 1
           fi
+          
+          # 6. 创建python符号链接以便后续使用
+          cd python/bin
+          ln -sf python3.10 python
+          cd ../..
           
           echo "✅ Python配置成功，版本：$(./python/bin/python --version)"
 
@@ -140,17 +145,17 @@ jobs:
       - name: 准备兼容的libstdc++
         run: |
           # 下载兼容GLIBC 2.31的libstdc++6
-          wget -q https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-12/libstdc++6_12.3.0-1ubuntu1_amd64.deb
+          wget -q https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-12/libstdc++6_极速下载-12.3.0-1ubuntu1_amd64.deb
           if [ ! -f "libstdc++6_12.3.0-1ubuntu1_amd64.deb" ]; then
             echo "错误：libstdc++6下载失败"
             exit 1
           fi
           
           # 解压deb包获取libstdc++.so.6
-          ar x libstdc++6_12.3.0-1ubuntu1_amd64.deb data.tar.xz
+          ar x libstdc++极速下载-12.3.0-1ubuntu1_amd64.deb data.tar.xz
           tar -xf data.tar.xz ./usr/lib/x86_64-linux-gnu/libstdc++.so.6
           
-          if [ ! -f "./usr/lib/x86_64-linux-gnu/libstdc++.so.6" ]; then
+          if [ ! -f "./usr/lib/x86_64-linux-gnu/libstd极速下载++.so.6" ]; then
             echo "错误：libstdc++.so.6提取失败"
             exit 1
           fi
@@ -167,7 +172,7 @@ jobs:
           echo "当前目录文件列表："
           ls -la
           if [ ! -f "./main.py" ]; then
-            echo "错误：未找到入口脚本main.py"
+            echo "错误：未找到入口脚本main极速下载.py"
             exit 1
           fi
           echo "✅ 确认main.py存在"
@@ -194,7 +199,7 @@ jobs:
           
           # 执行打包（携带所有依赖和兼容的libstdc++）
           echo "开始打包，使用libaio路径：$LIB_AIO_PATH"
-          ./python/bin/pyinstaller --onefile --name myapp-linux \
+          ./python/bin/python -m PyInstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.10/site-packages \
             --hidden-import=flask \
             --hidden-import=dmPython \
