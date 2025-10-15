@@ -15,15 +15,16 @@ jobs:
 
       - name: 配置静态Python环境
         run: |
-          wget https://github.com/indygreg/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
+          # 使用兼容GLIBC 2.28+的Python 3.10版本
+          wget https://github.com/indygreg/python-build-standalone/releases/download/20230726/cpython-3.10.12+20230726-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
+          if [ ! -f "cpython-3.10.12+20230726-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
           mkdir -p python
-          tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
+          tar -xzf cpython-3.10.12+20230726-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
           if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败"
@@ -92,7 +93,31 @@ jobs:
           fi
           echo "✅ 所有依赖安装完成"
 
-      - name: 打包应用（最终稳定版）
+      - name: 准备兼容的libstdc++
+        run: |
+          # 下载兼容GLIBC 2.31的libstdc++6
+          wget -q https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-12/libstdc++6_12.3.0-1ubuntu1_amd64.deb
+          if [ ! -f "libstdc++6_12.3.0-1ubuntu1_amd64.deb" ]; then
+            echo "错误：libstdc++6下载失败"
+            exit 1
+          fi
+          
+          # 解压deb包获取libstdc++.so.6
+          ar x libstdc++6_12.3.0-1ubuntu1_amd64.deb data.tar.xz
+          tar -xf data.tar.xz ./usr/lib/x86_64-linux-gnu/libstdc++.so.6
+          
+          if [ ! -f "./usr/lib/x86_64-linux-gnu/libstdc++.so.6" ]; then
+            echo "错误：libstdc++.so.6提取失败"
+            exit 1
+          fi
+          
+          # 验证libstdc++版本兼容性
+          echo "libstdc++.so.6 GLIBC要求："
+          objdump -p ./usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep -A 10 "Version References:" || true
+          
+          echo "✅ 兼容的libstdc++.so.6准备完成"
+
+      - name: 打包应用（兼容GLIBC 2.31）
         run: |
           # 验证入口脚本存在
           echo "当前目录文件列表："
@@ -119,14 +144,14 @@ jobs:
             echo "fallback成功，路径：$LIB_AIO_PATH"
           fi
           
-          # 设置GLIBC兼容性环境变量
-          export GLIBC_COMPAT_VER=2.31
-          echo "设置GLIBC兼容版本：$GLIBC_COMPAT_VER"
+          # 设置链接器选项，解决memcpy/memmove符号问题
+          export LDFLAGS="-Wl,--wrap=memcpy -Wl,--wrap=memmove"
+          echo "设置链接器选项：$LDFLAGS"
           
-          # 执行打包（携带所有依赖）
+          # 执行打包（携带所有依赖和兼容的libstdc++）
           echo "开始打包，使用libaio路径：$LIB_AIO_PATH"
           ./python/bin/pyinstaller --onefile --name myapp-linux \
-            --paths=./python/lib/python3.11/site-packages \
+            --paths=./python/lib/python3.10/site-packages \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
@@ -134,7 +159,10 @@ jobs:
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
+            --add-binary="./usr/lib/x86_64-linux-gnu/libstdc++.so.6:." \
             --runtime-tmpdir=. \
+            --strip \
+            --noconfirm \
             ./main.py
           
           # 验证打包产物
@@ -145,7 +173,7 @@ jobs:
           
           # 检查产物的GLIBC依赖
           echo "检查产物的GLIBC依赖："
-          ldd dist/myapp-linux | grep libc || true
+          objdump -p dist/myapp-linux | grep -A 10 "Version References:" || true
           
           echo "✅ 打包完成，产物信息："
           ls -lh dist/myapp-linux  # 打印产物大小和权限
