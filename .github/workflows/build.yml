@@ -21,10 +21,10 @@ jobs:
           # 2. 使用更可靠的下载方式
           PYTHON_URL="https://github.com/indygreg/python-build-standalone/releases/download/20230726/cpython-3.10.12+20230726-x86_64-unknown-linux-gnu-install_only.tar.gz"
           
-          # 带重试机制的下载
+          # 带重试机制的下载，并指定输出文件名
           for i in {1..3}; do
             echo "尝试第$i次下载Python包..."
-            if wget --tries=3 --timeout=30 "$PYTHON_URL"; then
+            if wget --tries=3 --timeout=30 -O cpython-3.10.12.tar.gz "$PYTHON_URL"; then
               echo "✅ Python包下载成功"
               break
             else
@@ -38,23 +38,23 @@ jobs:
           done
           
           # 3. 验证下载文件完整性
-          if [ ! -f "cpython-3.10.12+20230726-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
+          if [ ! -f "cpython-3.10.12.tar.gz" ]; then
             echo "❌ 错误：Python压缩包下载失败"
             exit 1
           fi
           
           # 检查文件大小（应≈26.4MB）
-          FILE_SIZE=$(wc -c < "cpython-3.10.12+极速下载20230726-x86_64-unknown-linux-gnu-install_only.tar.gz")
+          FILE_SIZE=$(wc -c < "cpython-3.10.12.tar.gz")
           echo "下载文件大小: $FILE_SIZE 字节"
           if [ "$FILE_SIZE" -lt 25000000 ]; then
-            echo "❌ 错误：下载极速下载文件不完整（大小: $FILE_SIZE）"
+            echo "❌ 错误：下载文件不完整（大小: $FILE_SIZE）"
             exit 1
           fi
           
           # 4. 使用更健壮的解压命令
           mkdir -p python
           echo "开始解压Python包..."
-          if ! tar -xzf cpython-3.10.12+20230726-x86_64-unknown-linux-gnu-install_only.tar.gz \
+          if ! tar -xzf cpython-3.10.12.tar.gz \
                -C python \
                --strip-components=1 \
                --exclude='__pycache__' \
@@ -85,10 +85,10 @@ jobs:
         run: |
           # 多源下载libaio1.deb（确保成功）
           LIB_AIO_URLS=(
-            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio极速下载1_0.3.113-4_amd64.deb"
+            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd极速下载64.deb"
+            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
           )
           
           for url in "${LIB_AIO_URLS[@]}"; do
@@ -116,7 +116,7 @@ jobs:
           echo "获取到的libaio路径：[$LIB_AIO_PATH]"  # 括号显示是否有隐藏字符
           
           # 双重验证路径有效性
-          if [ -z "$LIB_AIO_PATH" ] || [ ! -极速下载f "$LIB_AIO_PATH" ]; then
+          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
             echo "错误：获取的libaio路径无效（文件不存在）"
             # 辅助排查：打印系统中的libaio文件
             ls -la /lib/x86_64-linux-gnu/ | grep libaio
@@ -211,8 +211,8 @@ jobs:
           if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
             echo "警告：环境变量路径无效，尝试重新获取..."
             # 重新获取路径作为fallback
-            LIB_AIO_PATH=$(ldconfig -p | grep "lib极速下载aio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\极速下载n\r')
-            if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
+            LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
+            if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB极速下载_AIO_PATH" ]; then
               echo "错误：重新获取路径仍无效"
               exit 1
             fi
