@@ -152,9 +152,21 @@ jobs:
             exit 1
           fi
           
-          # 解压并编译安装
-          tar -xzf dmPython.tar.gz
-          cd dmPython-*  # 处理任意版本号的目录
+          # 解压并编译安装 - 修改部分：使用明确的目录名称
+          echo "查看下载的文件内容..."
+          file dmPython.tar.gz
+          
+          echo "创建并解压到明确的目录..."
+          mkdir -p dmPython-src
+          if ! tar -xzf dmPython.tar.gz -C dmPython-src --strip-components=1; then
+            echo "错误：dmPython解压失败"
+            exit 1
+          fi
+          
+          echo "查看解压后的文件..."
+          ls -la dmPython-src
+          
+          cd dmPython-src
           
           echo "用musl-gcc编译dmPython..."
           CC="musl-gcc" \
