@@ -135,9 +135,9 @@ jobs:
             echo "✅ 依赖路径[$path]有效"
           done
           
-          # 检查编译工具是否存在
+          # 检查musl-gcc是否存在
           if ! command -v musl-gcc &> /dev/null; then
-            echo "错误：未找到musl-gcc，尝试重新安装..."
+            echo "错误：musl-gcc未安装，尝试重新安装..."
             sudo apt-get install -y musl-tools
             if ! command -v musl-gcc &> /dev/null; then
               echo "错误：musl-gcc安装失败"
@@ -149,11 +149,10 @@ jobs:
           echo "升级pip到25.2版本..."
           $PYTHON_BIN -m pip install pip==25.2 -i https://pypi.org/simple/
           
-          # 核心步骤：下载达梦官网dmPython源码
+          # 下载dmPython源码包
           echo "下载dmPython源码包..."
           DM_PYTHON_SRC_URL="https://raw.githubusercontent.com/2758003362/dabao/master/dmPython.tar.gz"
           
-          # 下载重试逻辑
           if ! wget --retry-connrefused --waitretry=3 --read-timeout=30 --timeout=20 -t 5 \
                    "$DM_PYTHON_SRC_URL" -O "dmPython.tar.gz"; then
             echo "错误：dmPython源码包下载失败！"
@@ -177,7 +176,8 @@ jobs:
           cd dmPython-src
           
           echo "用musl-gcc编译dmPython..."
-          # 修正编译命令格式，移除行尾注释避免语法问题
+          # 关键修复：移除行尾注释，确保续行符(\)正确生效
+          # 启用AIO支持（适配达梦）
           CC="musl-gcc" \
           CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC -DDM_USE_AIO=1" \
           LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
