@@ -1,4 +1,4 @@
-name: 达梦API服务打包（安装程序ISO处理）
+name: 达梦API服务打包（dmdba用户适配）
 
 on:
   push:
@@ -28,14 +28,39 @@ jobs:
           done
           echo "✅ 基础工具安装完成"
 
-      - name: 下载并运行达梦安装程序（提取客户端）
+      - name: 创建达梦专用用户dmdba（解决用户缺失问题）
+        run: |
+          # 创建dmdba用户组
+          if ! getent group dinstall > /dev/null; then
+            sudo groupadd dinstall
+            echo "创建用户组dinstall"
+          fi
+          
+          # 创建dmdba用户并加入组
+          if ! id -u dmdba > /dev/null 2>&1; then
+            sudo useradd -g dinstall -m -d /home/dmdba dmdba
+            echo "创建用户dmdba"
+          fi
+          
+          # 设置密码（非交互环境临时密码）
+          echo "dmdba:dmdba123" | sudo chpasswd
+          
+          # 验证用户创建
+          if id -u dmdba > /dev/null 2>&1; then
+            echo "✅ dmdba用户创建完成"
+          else
+            echo "错误：dmdba用户创建失败"
+            exit 1
+          fi
+
+      - name: 下载并运行达梦安装程序（带用户权限）
         run: |
           # 配置路径
           DM_TAR_URL="https://github.com/2758003362/dabao/releases/download/1.2.1/dm8_20250506_x86_rh7_64.tar.gz"
           DM_TAR_FILE="dm_client.tar.gz"
           TMP_EXTRACT_DIR="/tmp/dm_extract"
           ISO_MOUNT_DIR="/mnt/dm_iso"
-          DM_INSTALL_DIR="/opt/dmdbms"  # 客户端安装目标路径
+          DM_INSTALL_DIR="/opt/dmdbms"  # 客户端安装路径
 
           # 1. 下载tar包
           echo "下载达梦tar包..."
@@ -53,7 +78,7 @@ jobs:
             exit 1
           fi
 
-          # 3. 查找ISO文件并提取
+          # 3. 提取ISO内容
           echo "提取ISO内容..."
           DM_ISO_FILE=$(find "$TMP_EXTRACT_DIR" -name "*.iso" -type f | head -n 1)
           if [ -z "$DM_ISO_FILE" ]; then
@@ -63,45 +88,43 @@ jobs:
           sudo mkdir -p "$ISO_MOUNT_DIR"
           sudo xorriso -osirrox on -indev "$DM_ISO_FILE" -extract / "$ISO_MOUNT_DIR"
 
-          # 4. 定位安装程序（DMInstall.bin）
+          # 4. 定位安装程序并授权
           DM_INSTALLER=$(find "$ISO_MOUNT_DIR" -name "DMInstall.bin" -type f | head -n 1)
           if [ -z "$DM_INSTALLER" ]; then
-            echo "错误：未找到安装程序DMInstall.bin，ISO结构："
-            tree "$ISO_MOUNT_DIR"
+            echo "错误：未找到DMInstall.bin"
             exit 1
           fi
-          echo "找到安装程序：$DM_INSTALLER"
+          sudo chmod +x "$DM_INSTALLER"  # 赋予执行权限
 
-          # 5. 运行安装程序（静默安装客户端组件）
-          echo "运行达梦安装程序（仅安装客户端）..."
-          # 赋予执行权限
-          sudo chmod +x "$DM_INSTALLER"
-          # 静默安装客户端（达梦安装程序参数：-i 静默模式，-t 安装类型=客户端）
-          if ! sudo "$DM_INSTALLER" -i -t client -d "$DM_INSTALL_DIR"; then
+          # 5. 准备安装目录（赋予dmdba权限）
+          sudo mkdir -p "$DM_INSTALL_DIR"
+          sudo chown -R dmdba:dinstall "$DM_INSTALL_DIR"  # 关键：让dmdba拥有目录权限
+
+          # 6. 切换到dmdba用户运行安装程序（静默安装客户端）
+          echo "以dmdba用户运行安装程序..."
+          if ! sudo -u dmdba "$DM_INSTALLER" -i -t client -d "$DM_INSTALL_DIR"; then
             echo "错误：客户端安装失败"
             exit 1
           fi
 
-          # 6. 验证安装结果（查找关键文件）
-          echo "验证客户端安装..."
+          # 7. 验证安装结果
+          echo "验证客户端文件..."
           DM_LIB=$(find "$DM_INSTALL_DIR" -name "libdmdpi.so" | head -n 1)
           DM_HEADER=$(find "$DM_INSTALL_DIR" -name "dmdbai.h" | head -n 1)
 
           if [ -z "$DM_LIB" ] || [ -z "$DM_HEADER" ]; then
-            echo "错误：安装后缺少关键文件，安装目录结构："
+            echo "错误：缺少关键文件，安装目录结构："
             tree "$DM_INSTALL_DIR" --dirsfirst | head -100
             exit 1
           fi
 
-          # 7. 设置环境变量
+          # 8. 设置环境变量（供编译使用）
           DM_LIB_PATH=$(dirname "$DM_LIB")
           DM_INCLUDE_PATH=$(dirname "$DM_HEADER")
           echo "DM_HOME=$DM_INSTALL_DIR" >> $GITHUB_ENV
           echo "DM_LIB_PATH=$DM_LIB_PATH" >> $GITHUB_ENV
           echo "DM_INCLUDE_PATH=$DM_INCLUDE_PATH" >> $GITHUB_ENV
           echo "✅ 达梦客户端安装完成"
-          echo "库路径: $DM_LIB_PATH"
-          echo "头文件路径: $DM_INCLUDE_PATH"
 
       - name: 配置静态Python 3.11
         run: |
