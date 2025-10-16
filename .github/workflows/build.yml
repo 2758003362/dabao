@@ -135,24 +135,32 @@ jobs:
             echo "✅ 依赖路径[$path]有效"
           done
           
+          # 检查编译工具是否存在
+          if ! command -v musl-gcc &> /dev/null; then
+            echo "错误：未找到musl-gcc，尝试重新安装..."
+            sudo apt-get install -y musl-tools
+            if ! command -v musl-gcc &> /dev/null; then
+              echo "错误：musl-gcc安装失败"
+              exit 1
+            fi
+          fi
+          
           # 升级pip
           echo "升级pip到25.2版本..."
           $PYTHON_BIN -m pip install pip==25.2 -i https://pypi.org/simple/
           
-          # 核心步骤：下载达梦官网dmPython源码（解决登录限制方案）
+          # 核心步骤：下载达梦官网dmPython源码
           echo "下载dmPython源码包..."
-          # 使用指定的GitHub仓库链接
           DM_PYTHON_SRC_URL="https://raw.githubusercontent.com/2758003362/dabao/master/dmPython.tar.gz"
           
-          # 下载重试逻辑（应对网络波动）
+          # 下载重试逻辑
           if ! wget --retry-connrefused --waitretry=3 --read-timeout=30 --timeout=20 -t 5 \
                    "$DM_PYTHON_SRC_URL" -O "dmPython.tar.gz"; then
             echo "错误：dmPython源码包下载失败！"
-            echo "解决方案：1. 检查链接是否有效；2. 确认仓库是否公开可访问"
             exit 1
           fi
           
-          # 解压并编译安装 - 修改部分：使用明确的目录名称
+          # 解压并编译安装
           echo "查看下载的文件内容..."
           file dmPython.tar.gz
           
@@ -169,8 +177,9 @@ jobs:
           cd dmPython-src
           
           echo "用musl-gcc编译dmPython..."
+          # 修正编译命令格式，移除行尾注释避免语法问题
           CC="musl-gcc" \
-          CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC -DDM_USE_AIO=1" \  # 启用AIO支持（适配达梦）
+          CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC -DDM_USE_AIO=1" \
           LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
           $PYTHON_BIN setup.py install
           
@@ -179,7 +188,7 @@ jobs:
           # 验证安装
           if ! $PYTHON_BIN -c "import dmPython" &> /dev/null; then
             echo "错误：dmPython安装失败（编译或依赖问题）"
-            $PYTHON_BIN -c "import dmPython" 2>&1  # 输出具体错误（如缺少头文件、库文件）
+            $PYTHON_BIN -c "import dmPython" 2>&1  # 输出具体错误
             exit 1
           fi
           DM_VERSION=$($PYTHON_BIN -c 'import dmPython; print(f"dmPython版本：{dmPython.__version__}")')
@@ -228,29 +237,29 @@ jobs:
             fi
           fi
           
-          # 打包命令（保留所有隐藏导入，确保dmPython被正确打包）
+          # 打包命令
           $PYTHON_BIN -m PyInstaller --onefile --name myapp-linux \
             --paths="$PYTHON_LIB/site-packages" \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
-            --hidden-import=dmPython._dmPython \  # 新增：达梦底层模块（避免打包后缺失）
+            --hidden-import=dmPython._dmPython \
             --hidden-import=flask \
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
-            --noupx \  # 禁用UPX压缩（避免静态包损坏）
+            --noupx \
             ./main.py
           
           if [ ! -f "dist/myapp-linux" ]; then
             echo "错误：打包失败"
             if [ -f "build/myapp-linux/warn-myapp-linux.txt" ]; then
-              cat build/myapp-linux/warn-myapp-linux.txt  # 输出打包警告（便于排查）
+              cat build/myapp-linux/warn-myapp-linux.txt
             fi
             exit 1
           fi
           
-          # 验证产物是否为静态链接（确保全Linux兼容）
+          # 验证产物是否为静态链接
           if ! file dist/myapp-linux | grep -q "statically linked"; then
             echo "警告：产物不是全静态链接，可能存在兼容性问题"
           else
