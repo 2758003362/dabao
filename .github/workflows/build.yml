@@ -1,4 +1,4 @@
-name: 达梦API服务打包（ISO客户端+静态链接）
+name: 达梦API服务打包（安装程序ISO处理）
 
 on:
   push:
@@ -13,13 +13,13 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装基础工具（含ISO处理）
+      - name: 安装基础工具
         run: |
           sudo apt-get update -y
           sudo apt-get install -y \
             musl-tools tree wget findutils gcc libc6-dev \
-            xorriso  # ISO镜像提取工具
-          # 验证工具安装
+            xorriso  # ISO提取工具
+          # 验证工具
           for tool in musl-gcc tree wget find gcc xorriso; do
             if ! command -v $tool &> /dev/null; then
               echo "错误：工具[$tool]安装失败"
@@ -28,17 +28,17 @@ jobs:
           done
           echo "✅ 基础工具安装完成"
 
-      - name: 下载并处理达梦客户端ISO
+      - name: 下载并运行达梦安装程序（提取客户端）
         run: |
           # 配置路径
           DM_TAR_URL="https://github.com/2758003362/dabao/releases/download/1.2.1/dm8_20250506_x86_rh7_64.tar.gz"
           DM_TAR_FILE="dm_client.tar.gz"
           TMP_EXTRACT_DIR="/tmp/dm_extract"
           ISO_MOUNT_DIR="/mnt/dm_iso"
-          DM_INSTALL_DIR="/opt/dmdbms"
+          DM_INSTALL_DIR="/opt/dmdbms"  # 客户端安装目标路径
 
           # 1. 下载tar包
-          echo "下载达梦客户端tar包..."
+          echo "下载达梦tar包..."
           if ! wget --retry-connrefused --waitretry=3 --timeout=30 -t 5 \
                    "$DM_TAR_URL" -O "$DM_TAR_FILE"; then
             echo "错误：tar包下载失败"
@@ -53,55 +53,47 @@ jobs:
             exit 1
           fi
 
-          # 3. 查找ISO文件
-          echo "查找ISO文件..."
+          # 3. 查找ISO文件并提取
+          echo "提取ISO内容..."
           DM_ISO_FILE=$(find "$TMP_EXTRACT_DIR" -name "*.iso" -type f | head -n 1)
           if [ -z "$DM_ISO_FILE" ]; then
-            echo "错误：未找到ISO文件，目录结构："
-            tree "$TMP_EXTRACT_DIR"
+            echo "错误：未找到ISO文件"
             exit 1
           fi
-          echo "找到ISO文件：$DM_ISO_FILE"
-
-          # 4. 提取ISO内容
-          echo "提取ISO内容..."
           sudo mkdir -p "$ISO_MOUNT_DIR"
-          if ! sudo xorriso -osirrox on -indev "$DM_ISO_FILE" -extract / "$ISO_MOUNT_DIR"; then
-            echo "错误：ISO提取失败"
+          sudo xorriso -osirrox on -indev "$DM_ISO_FILE" -extract / "$ISO_MOUNT_DIR"
+
+          # 4. 定位安装程序（DMInstall.bin）
+          DM_INSTALLER=$(find "$ISO_MOUNT_DIR" -name "DMInstall.bin" -type f | head -n 1)
+          if [ -z "$DM_INSTALLER" ]; then
+            echo "错误：未找到安装程序DMInstall.bin，ISO结构："
+            tree "$ISO_MOUNT_DIR"
+            exit 1
+          fi
+          echo "找到安装程序：$DM_INSTALLER"
+
+          # 5. 运行安装程序（静默安装客户端组件）
+          echo "运行达梦安装程序（仅安装客户端）..."
+          # 赋予执行权限
+          sudo chmod +x "$DM_INSTALLER"
+          # 静默安装客户端（达梦安装程序参数：-i 静默模式，-t 安装类型=客户端）
+          if ! sudo "$DM_INSTALLER" -i -t client -d "$DM_INSTALL_DIR"; then
+            echo "错误：客户端安装失败"
             exit 1
           fi
 
-          # 5. 定位客户端核心文件
-          echo "定位客户端文件..."
-          # 达梦客户端常见路径模式
-          DM_CLIENT_DIR=$(find "$ISO_MOUNT_DIR" -type d \
-            \( -name "client" \
-            -o -path "*/dmdbms/client" \
-            -o -path "*/opt/dmdbms/client" \) | head -n 1)
-
-          if [ -z "$DM_CLIENT_DIR" ]; then
-            echo "错误：未找到客户端目录，ISO结构："
-            tree "$ISO_MOUNT_DIR" --dirsfirst | head -100
-            exit 1
-          fi
-
-          # 6. 复制到安装目录
-          echo "安装客户端文件..."
-          sudo mkdir -p "$DM_INSTALL_DIR"
-          sudo cp -r "$DM_CLIENT_DIR"/* "$DM_INSTALL_DIR/"
-
-          # 7. 验证关键文件
-          echo "验证客户端文件..."
+          # 6. 验证安装结果（查找关键文件）
+          echo "验证客户端安装..."
           DM_LIB=$(find "$DM_INSTALL_DIR" -name "libdmdpi.so" | head -n 1)
           DM_HEADER=$(find "$DM_INSTALL_DIR" -name "dmdbai.h" | head -n 1)
 
           if [ -z "$DM_LIB" ] || [ -z "$DM_HEADER" ]; then
-            echo "错误：缺少关键文件，安装目录结构："
+            echo "错误：安装后缺少关键文件，安装目录结构："
             tree "$DM_INSTALL_DIR" --dirsfirst | head -100
             exit 1
           fi
 
-          # 8. 设置环境变量
+          # 7. 设置环境变量
           DM_LIB_PATH=$(dirname "$DM_LIB")
           DM_INCLUDE_PATH=$(dirname "$DM_HEADER")
           echo "DM_HOME=$DM_INSTALL_DIR" >> $GITHUB_ENV
