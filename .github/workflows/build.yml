@@ -25,18 +25,20 @@ jobs:
           done
           echo "✅ 基础工具安装完成"
 
-      - name: 配置静态Python 3.11（修复SHA256校验）
+      - name: 配置静态Python 3.11（修复路径查找逻辑）
         run: |
           PYTHON_TAR="cpython-3.11.8+20240224-x86_64-unknown-linux-musl-install_only.tar.gz"
           PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20240224/$PYTHON_TAR"
           EXPECTED_SHA256="08e1ebf51b5965e23f8e68664d17274c1cdabb5b2d7509a2003920e5d58172c7"
           
+          # 下载Python压缩包
           if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 \
                    "$PYTHON_URL" -O "$PYTHON_TAR"; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
+          # 校验SHA256
           ACTUAL_SHA256=$(sha256sum "$PYTHON_TAR" | awk '{print $1}')
           if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
             echo "错误：Python SHA256不匹配"
@@ -45,44 +47,52 @@ jobs:
             exit 1
           fi
           
+          # 解压Python（关键：直接解压到python-musl，不嵌套额外目录）
           mkdir -p python-musl
-          if ! tar -xzvf "$PYTHON_TAR" -C python-musl; then
+          if ! tar -xzvf "$PYTHON_TAR" -C python-musl --strip-components=1; then
             echo "错误：Python解压失败"
             exit 1
           fi
           
-          ALL_PYTHON_FILES=$(find python-musl -name "python*" -type f | sort)
-          PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python3.11" | head -n 1)
+          # 修复路径查找：用find命令精准定位python3.11可执行文件
+          PYTHON_BIN=$(find python-musl -name "python3.11" -type f -executable | head -n 1)
           if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            PYTHON_BIN=$(echo "$ALL_PYTHON_FILES" | grep "/bin/python3" | head -n 1)
-          fi
-          
-          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            echo "错误：未找到Python可执行文件"
-            tree python-musl
+            echo "错误：未找到Python 3.11可执行文件"
+            echo "解压后的目录结构："
+            tree python-musl  # 输出结构便于调试
             exit 1
           fi
           
+          # 验证Python可执行性和静态链接属性
           if ! "$PYTHON_BIN" --version &> /dev/null; then
             echo "错误：[$PYTHON_BIN]无法执行"
             exit 1
           fi
-          
           if ! file "$PYTHON_BIN" | grep -q "statically linked"; then
             echo "错误：Python不是静态链接版本"
             exit 1
           fi
           
-          PYTHON_INCLUDE=$(dirname "$PYTHON_BIN")/../include/python3.11
-          PYTHON_LIB=$(dirname "$PYTHON_BIN")/../lib/python3.11
+          # 基于实际PYTHON_BIN路径计算头文件和库路径（修复路径拼接）
+          PYTHON_BIN_DIR=$(dirname "$PYTHON_BIN")
+          PYTHON_INCLUDE="$PYTHON_BIN_DIR/../include/python3.11"
+          PYTHON_LIB="$PYTHON_BIN_DIR/../lib/python3.11"
+          
+          # 验证头文件和库路径
           if [ ! -d "$PYTHON_INCLUDE" ]; then
-            echo "错误：Python头文件目录不存在"
+            echo "错误：Python头文件目录[$PYTHON_INCLUDE]不存在"
             exit 1
           fi
+          if [ ! -d "$PYTHON_LIB" ]; then
+            echo "错误：Python库目录[$PYTHON_LIB]不存在"
+            exit 1
+          fi
+          
+          # 设置环境变量（确保后续步骤使用正确路径）
           echo "PYTHON_BIN=$PYTHON_BIN" >> $GITHUB_ENV
           echo "PYTHON_INCLUDE=$PYTHON_INCLUDE" >> $GITHUB_ENV
           echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
-          echo "✅ Python 3.11（musl静态版）配置完成"
+          echo "✅ Python 3.11（musl静态版）配置完成，路径：$PYTHON_BIN"
 
       - name: 编译静态libaio
         run: |
@@ -120,14 +130,20 @@ jobs:
 
       - name: 从达梦官网源码安装dmPython（解决登录下载限制）
         run: |
-          # 读取环境变量
+          # 读取环境变量（此时PYTHON_BIN已修复为正确路径）
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           PYTHON_INCLUDE="${{ env.PYTHON_INCLUDE }}"
           PYTHON_LIB="${{ env.PYTHON_LIB }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           
-          # 验证依赖路径
-          for path in "$PYTHON_BIN" "$PYTHON_INCLUDE" "$PYTHON_LIB" "$LIB_AIO_PATH"; do
+          # 先验证Python路径是否存在（双重保险）
+          if [ ! -f "$PYTHON_BIN" ]; then
+            echo "错误：Python可执行文件[$PYTHON_BIN]不存在"
+            exit 1
+          fi
+          
+          # 验证其他依赖路径
+          for path in "$PYTHON_INCLUDE" "$PYTHON_LIB" "$LIB_AIO_PATH"; do
             if [ -z "$path" ] || [ ! -e "$path" ]; then
               echo "错误：依赖路径[$path]无效"
               exit 1
@@ -147,7 +163,7 @@ jobs:
           
           # 升级pip
           echo "升级pip到25.2版本..."
-          $PYTHON_BIN -m pip install pip==25.2 -i https://pypi.org/simple/
+          "$PYTHON_BIN" -m pip install pip==25.2 -i https://pypi.org/simple/
           
           # 下载dmPython源码包
           echo "下载dmPython源码包..."
@@ -176,22 +192,21 @@ jobs:
           cd dmPython-src
           
           echo "用musl-gcc编译dmPython..."
-          # 关键修复：移除行尾注释，确保续行符(\)正确生效
-          # 启用AIO支持（适配达梦）
+          # 编译命令（路径已修复，无需修改）
           CC="musl-gcc" \
           CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC -DDM_USE_AIO=1" \
           LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
-          $PYTHON_BIN setup.py install
+          "$PYTHON_BIN" setup.py install
           
           cd ..
           
           # 验证安装
-          if ! $PYTHON_BIN -c "import dmPython" &> /dev/null; then
+          if ! "$PYTHON_BIN" -c "import dmPython" &> /dev/null; then
             echo "错误：dmPython安装失败（编译或依赖问题）"
-            $PYTHON_BIN -c "import dmPython" 2>&1  # 输出具体错误
+            "$PYTHON_BIN" -c "import dmPython" 2>&1  # 输出具体错误
             exit 1
           fi
-          DM_VERSION=$($PYTHON_BIN -c 'import dmPython; print(f"dmPython版本：{dmPython.__version__}")')
+          DM_VERSION=$("$PYTHON_BIN" -c 'import dmPython; print(f"dmPython版本：{dmPython.__version__}")')
           echo "✅ $DM_VERSION 安装完成"
 
       - name: 安装其他Python依赖
@@ -199,7 +214,7 @@ jobs:
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           
           echo "安装其他Python依赖..."
-          $PYTHON_BIN -m pip install \
+          "$PYTHON_BIN" -m pip install \
             pandas==2.1.4 \
             flask==2.3.3 \
             werkzeug==2.3.7 \
@@ -209,9 +224,9 @@ jobs:
           
           # 验证依赖
           for lib in dmPython pandas flask werkzeug; do
-            if ! $PYTHON_BIN -c "import $lib" &> /dev/null; then
+            if ! "$PYTHON_BIN" -c "import $lib" &> /dev/null; then
               echo "错误：[$lib]导入失败"
-              $PYTHON_BIN -c "import $lib" 2>&1
+              "$PYTHON_BIN" -c "import $lib" 2>&1
               exit 1
             fi
           done
@@ -238,7 +253,7 @@ jobs:
           fi
           
           # 打包命令
-          $PYTHON_BIN -m PyInstaller --onefile --name myapp-linux \
+          "$PYTHON_BIN" -m PyInstaller --onefile --name myapp-linux \
             --paths="$PYTHON_LIB/site-packages" \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
