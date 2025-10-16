@@ -16,7 +16,7 @@ jobs:
       - name: 安装基础工具（musl+编译依赖）
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y musl-tools tree wget findutils gcc
+          sudo apt-get install -y musl-tools tree wget findutils gcc libc6-dev
           for tool in musl-gcc tree wget find gcc; do
             if ! command -v $tool &> /dev/null; then
               echo "错误：工具[$tool]安装失败"
@@ -42,7 +42,6 @@ jobs:
             echo "错误：Python SHA256不匹配"
             echo "实际值: $ACTUAL_SHA256"
             echo "预期值: $EXPECTED_SHA256"
-            echo "提示：若仍不匹配，请到官方页获取最新SHA256：https://github.com/astral-sh/python-build-standalone/releases/tag/20240224"
             exit 1
           fi
           
@@ -85,7 +84,7 @@ jobs:
           echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
           echo "✅ Python 3.11（musl静态版）配置完成"
 
-      - name: 编译静态libaio（修复find命令语法）
+      - name: 编译静态libaio
         run: |
           wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
           tar -xzf libaio-libaio-0.3.113.tar.gz
@@ -95,7 +94,6 @@ jobs:
           sed -i "s|^CFLAGS\s*=.*$|CFLAGS = -fPIC -static -I/usr/include -D_GNU_SOURCE -Wall|" src/Makefile
           sed -i "s|^LDFLAGS\s*=.*$|LDFLAGS = -static|" src/Makefile
           
-          # 修复find命令：无多余反斜杠，-exec正确终止
           find src/ -name "*.c" -exec sed -i -e '/#include <bits\/wordsize.h>/d' -e '1i #define __WORDSIZE 64' {} \;
           
           sudo cp src/libaio.h /usr/include/
@@ -120,7 +118,7 @@ jobs:
           echo "✅ libaio编译完成"
           cd ..
 
-      - name: 用pip安装dmPython（修复命令格式，强制源码编译）
+      - name: 从达梦官网源码安装dmPython（解决登录下载限制）
         run: |
           # 读取环境变量
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
@@ -137,44 +135,45 @@ jobs:
             echo "✅ 依赖路径[$path]有效"
           done
           
-          # 升级pip到25.2
+          # 升级pip
           echo "升级pip到25.2版本..."
           $PYTHON_BIN -m pip install pip==25.2 -i https://pypi.org/simple/
           
-          # 新增：测试达梦源连通性和版本可用性
-          echo "测试达梦源是否可用..."
-          if ! $PYTHON_BIN -m pip search dmPython -i https://mirrors.dameng.com/pypi/simple/ &> /dev/null; then
-            echo "警告：达梦源连接失败，尝试备用源..."
-            DM_PYPI_URL="https://download.dameng.com/mirrors/pypi/simple/"
-          else
-            DM_PYPI_URL="https://mirrors.dameng.com/pypi/simple/"
+          # 核心步骤：下载达梦官网dmPython源码（解决登录限制方案）
+          echo "下载dmPython源码包..."
+          # 使用指定的GitHub仓库链接
+          DM_PYTHON_SRC_URL="https://raw.githubusercontent.com/2758003362/dabao/master/dmPython.tar.gz"
+          
+          # 下载重试逻辑（应对网络波动）
+          if ! wget --retry-connrefused --waitretry=3 --read-timeout=30 --timeout=20 -t 5 \
+                   "$DM_PYTHON_SRC_URL" -O "dmPython.tar.gz"; then
+            echo "错误：dmPython源码包下载失败！"
+            echo "解决方案：1. 检查链接是否有效；2. 确认仓库是否公开可访问"
+            exit 1
           fi
           
-          echo "查询达梦源中的dmPython版本..."
-          $PYTHON_BIN -m pip index versions dmPython -i "$DM_PYPI_URL" || {
-            echo "错误：达梦源中未找到dmPython，请检查源地址"
-            exit 1
-          }
+          # 解压并编译安装
+          tar -xzf dmPython.tar.gz
+          cd dmPython-*  # 处理任意版本号的目录
           
-          # 核心修复：严格规范命令格式（反斜杠后无空格、无空行）
-          echo "用pip安装dmPython==2.5.22（强制源码编译，使用达梦源：$DM_PYPI_URL）..."
-          CC="musl-gcc" CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC" LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
-          $PYTHON_BIN -m pip install dmPython==2.5.22 \
-            --no-binary :all: \
-            --no-cache-dir \
-            -i "$DM_PYPI_URL" \
-            -v
+          echo "用musl-gcc编译dmPython..."
+          CC="musl-gcc" \
+          CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC -DDM_USE_AIO=1" \  # 启用AIO支持（适配达梦）
+          LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
+          $PYTHON_BIN setup.py install
+          
+          cd ..
           
           # 验证安装
           if ! $PYTHON_BIN -c "import dmPython" &> /dev/null; then
-            echo "错误：dmPython安装失败"
-            $PYTHON_BIN -c "import dmPython" 2>&1
+            echo "错误：dmPython安装失败（编译或依赖问题）"
+            $PYTHON_BIN -c "import dmPython" 2>&1  # 输出具体错误（如缺少头文件、库文件）
             exit 1
           fi
           DM_VERSION=$($PYTHON_BIN -c 'import dmPython; print(f"dmPython版本：{dmPython.__version__}")')
           echo "✅ $DM_VERSION 安装完成"
 
-      - name: 安装其他Python依赖（完全对齐成功环境）
+      - name: 安装其他Python依赖
         run: |
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           
@@ -197,7 +196,7 @@ jobs:
           done
           echo "✅ 所有依赖安装完成"
 
-      - name: 静态打包应用（生成全Linux兼容产物）
+      - name: 静态打包应用
         run: |
           if [ ! -f "./main.py" ]; then
             echo "错误：未找到main.py"
@@ -217,27 +216,34 @@ jobs:
             fi
           fi
           
-          # 打包命令
+          # 打包命令（保留所有隐藏导入，确保dmPython被正确打包）
           $PYTHON_BIN -m PyInstaller --onefile --name myapp-linux \
             --paths="$PYTHON_LIB/site-packages" \
-            --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
+            --hidden-import=dmPython._dmPython \  # 新增：达梦底层模块（避免打包后缺失）
+            --hidden-import=flask \
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
-            --noupx \
+            --noupx \  # 禁用UPX压缩（避免静态包损坏）
             ./main.py
           
           if [ ! -f "dist/myapp-linux" ]; then
             echo "错误：打包失败"
             if [ -f "build/myapp-linux/warn-myapp-linux.txt" ]; then
-              cat build/myapp-linux/warn-myapp-linux.txt
+              cat build/myapp-linux/warn-myapp-linux.txt  # 输出打包警告（便于排查）
             fi
             exit 1
           fi
           
+          # 验证产物是否为静态链接（确保全Linux兼容）
+          if ! file dist/myapp-linux | grep -q "statically linked"; then
+            echo "警告：产物不是全静态链接，可能存在兼容性问题"
+          else
+            echo "✅ 产物为全静态链接（支持所有Linux系统）"
+          fi
           echo "产物信息："
           file dist/myapp-linux
           echo "✅ 打包完成"
