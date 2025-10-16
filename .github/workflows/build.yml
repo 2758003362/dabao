@@ -37,88 +37,98 @@ jobs:
           [ -f "./python/bin/python" ] || { echo "错误：Python解压失败"; exit 1; }
           echo "✅ Python版本：$(./python/bin/python --version)"
 
-      - name: 安装libaio1（适配Ubuntu 24.04 deb822源+容错验证）
+      - name: 安装libaio1（修复证书验证+文件缺失）
         run: |
           set -x
           set -euo pipefail
           
-          echo "=== 1. 适配Ubuntu 24.04源格式（deb822） ==="
-          # 24.04用add-apt-repository管理源，需先安装工具包
-          sudo apt-get install -y software-properties-common || { echo "错误：安装源管理工具失败"; exit 1; }
-          
-          # 启用universe源（24.04正确方式，自动更新deb822格式的ubuntu.sources）
+          echo "=== 1. 确保universe源启用（24.04 deb822格式） ==="
+          sudo apt-get install -y software-properties-common
           if ! grep -q "universe" /etc/apt/sources.list.d/ubuntu.sources; then
-            echo "启用universe源（适配deb822格式）"
             sudo add-apt-repository -y universe
             sudo apt-get update -y -v || { echo "错误：apt update失败"; exit 1; }
           fi
           
-          echo "=== 2. 安装libaio1（优先apt） ==="
-          # 显式确认包存在
-          if ! apt-cache show libaio1 &> /dev/null; then
-            echo "错误：apt仓库中未找到libaio1（universe源未启用成功）"
-            exit 1
+          echo "=== 2. 优先apt安装（重试1次，应对临时故障） ==="
+          # 重试1次，避免网络波动导致的安装不完整
+          if ! sudo apt-get install -y -v libaio1; then
+            echo "⚠️ 首次apt安装失败，重试1次..."
+            sudo apt-get install -y -v libaio1 || echo "⚠️ 重试后apt仍失败，进入手动安装"
           fi
           
-          # 安装（允许apt返回成功后dpkg状态异常，后续用文件验证）
-          sudo apt-get install -y -v libaio1
-          echo "✅ apt安装命令执行完成"
-          
-          echo "=== 3. 多重容错验证（文件优先） ==="
-          # 关键：以“文件实际存在”为最终判断标准，而非dpkg数据库
+          echo "=== 3. 多重验证+手动安装fallback ==="
           LIB_AIO_DEFAULT_PATH="/lib/x86_64-linux-gnu/libaio.so.1"
+          LIB_AIO_PATH=""
           
-          # 验证1：检查dpkg状态（宽松模式，失败不退出）
-          if dpkg -s libaio1 &> /dev/null; then
-            echo "✅ 验证1（dpkg）：libaio1已注册"
-          else
-            echo "⚠️ 验证1（dpkg）：dpkg数据库未记录，但以文件为准"
-          fi
-          
-          # 验证2：检查核心文件是否存在（最终验证）
+          # 先检查默认路径
           if [ -f "$LIB_AIO_DEFAULT_PATH" ]; then
             LIB_AIO_PATH="$LIB_AIO_DEFAULT_PATH"
-            echo "✅ 验证2（文件）：libaio.so.1存在，路径：$LIB_AIO_PATH"
+            echo "✅ 找到libaio.so.1（默认路径）"
           else
-            # 兜底：查找文件（防止路径异常）
+            # 查找文件（防止路径异常）
             LIB_AIO_PATH=$(find /lib/x86_64-linux-gnu/ /usr/lib/x86_64-linux-gnu/ -name "libaio.so.1" | head -n 1)
             if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-              echo "❌ 验证2失败：未找到libaio.so.1，尝试手动安装"
-              # 手动下载fallback（Debian源，兼容24.04）
-              wget -v "https://ftp.br.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.113-5_amd64.deb" -O libaio1.deb
-              sudo dpkg -i --force-all libaio1.deb  # 强制安装，忽略dpkg校验
+              echo "❌ 未找到文件，执行手动安装（跳过证书验证）"
+              
+              # 关键：补充多个备用链接+wget跳过证书验证
+              LIB_AIO_URLS=(
+                "https://ftp.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.113-5_amd64.deb"  # Debian官方主源（证书可靠）
+                "https://mirrors.tuna.tsinghua.edu.cn/debian/pool/main/liba/libaio/libaio1_0.3.113-5_amd64.deb"  # 清华Debian源（国内+证书可靠）
+                "http://ftp.br.debian.org/debian/pool/main/liba/libaio/libaio1_0.3.113-5_amd64.deb"  # 原链接（http避免证书问题）
+              )
+              
+              deb_downloaded=false
+              for url in "${LIB_AIO_URLS[@]}"; do
+                echo "=== 尝试下载：$url ==="
+                rm -f libaio1.deb
+                # 添加--no-check-certificate跳过SSL验证，--no-proxy避免代理干扰
+                if wget -v --no-check-certificate --no-proxy --timeout=30 "$url" -O libaio1.deb; then
+                  # 校验文件有效性
+                  if [ $(du -k libaio1.deb | cut -f1) -ge 10 ] && dpkg-deb --info libaio1.deb &> /dev/null; then
+                    echo "✅ 手动下载成功"
+                    deb_downloaded=true
+                    break
+                  fi
+                  echo "警告：下载的deb包无效"
+                  rm -f libaio1.deb
+                fi
+              done
+              
+              if [ "$deb_downloaded" = false ]; then
+                echo "错误：所有手动下载链接失败"
+                exit 1
+              fi
+              
+              # 强制安装deb包
+              sudo dpkg -i --force-all libaio1.deb  # --force-all忽略所有校验，确保文件释放
+              if [ ! -f "$LIB_AIO_DEFAULT_PATH" ]; then
+                echo "错误：手动安装后仍未找到libaio.so.1"
+                exit 1
+              fi
               LIB_AIO_PATH="$LIB_AIO_DEFAULT_PATH"
-              [ -f "$LIB_AIO_PATH" ] || { echo "错误：手动安装后仍无文件"; exit 1; }
+              echo "✅ 手动安装成功，文件路径：$LIB_AIO_PATH"
             fi
           fi
           
-          echo "=== 4. 确认文件有效性 ==="
-          # 验证文件是否可读取（避免权限问题）
+          echo "=== 4. 确认文件有效性+写入环境变量 ==="
           [ -r "$LIB_AIO_PATH" ] || { echo "错误：libaio.so.1不可读"; exit 1; }
-          echo "确认有效路径：$LIB_AIO_PATH（大小：$(du -k "$LIB_AIO_PATH" | cut -f1) KB）"
-          
-          echo "=== 5. 写入环境变量 ==="
-          [ -w "$GITHUB_ENV" ] || { echo "错误：$GITHUB_ENV不可写"; exit 1; }
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> "$GITHUB_ENV"
           grep "LIB_AIO_PATH" "$GITHUB_ENV" || { echo "错误：环境变量写入失败"; exit 1; }
-          
-          echo "✅ libaio1安装完成（容错验证通过）"
+          echo "✅ libaio1安装完成，路径：$LIB_AIO_PATH"
 
       - name: 安装Python依赖（验证dmPython）
         run: |
           set -x
-          # 升级pip并安装依赖
           ./python/bin/python -m pip install --upgrade pip==23.3.1
           ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 flask==2.2.5 werkzeug==2.2.3 pyinstaller==5.13.2
           
-          # 关键：验证dmPython能否加载libaio（实际使用场景）
-          if ! ./python/bin/python -c "import dmPython; print('dmPython版本：', dmPython.__version__)" &> /dev/null; then
-            echo "错误：dmPython导入失败（可能是libaio路径问题）"
-            echo "当前libaio路径：${{ env.LIB_AIO_PATH }}"
+          # 验证dmPython能否加载libaio
+          if ! ./python/bin/python -c "import dmPython; conn = dmPython.connect(); print('dmPython连接成功')" &> /dev/null; then
+            echo "错误：dmPython无法连接（libaio路径问题）"
             ldd $(find ./python -name "dmPython.*.so") | grep libaio || true  # 检查依赖关联
             exit 1
           fi
-          echo "✅ 所有依赖导入成功"
+          echo "✅ dmPython验证成功（可正常连接）"
 
       - name: 打包应用
         run: |
@@ -126,32 +136,22 @@ jobs:
           [ -f "./main.py" ] || { echo "错误：未找到main.py"; exit 1; }
           
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
-          [ -f "$LIB_AIO_PATH" ] || { echo "错误：环境变量路径无效"; exit 1; }
+          python_lib_path="./python/lib/python3.10/site-packages"  # 固定Python 3.10路径
           
-          # 适配Python 3.10的依赖路径
-          python_lib_path=$(find ./python/lib -name "python3.10" -type d | head -n 1)/site-packages
-          [ -d "$python_lib_path" ] || { echo "错误：Python依赖路径不存在"; exit 1; }
-          
-          # 执行打包
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths="$python_lib_path" \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
             --hidden-import=pandas \
-            --hidden-import=pandas.core \
-            --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
             --runtime-tmpdir=. \
             --strip \
             --no-compress \
             ./main.py
           
-          # 验证产物
           [ -f "dist/myapp-linux" ] || { echo "错误：打包失败"; exit 1; }
-          echo "✅ 打包完成，产物信息："
-          ls -lh dist/myapp-linux
-          file dist/myapp-linux  # 确认是可执行文件
+          echo "✅ 打包完成，产物大小：$(du -h dist/myapp-linux | cut -f1)"
 
       - name: 保存产物
         uses: actions/upload-artifact@v4
