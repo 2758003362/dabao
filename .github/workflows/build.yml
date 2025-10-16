@@ -1,10 +1,10 @@
-name: 达梦API服务打包（musl静态链接，全Linux兼容）
+name: 达梦API服务打包（musl静态链接）
 
 on:
   push:
     tags:
-      - 'v*.*.*'  # 标签推送触发
-  workflow_dispatch:  # 手动触发
+      - 'v*.*.*'
+  workflow_dispatch:
 
 jobs:
   build-linux:
@@ -13,7 +13,7 @@ jobs:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装基础工具（musl+编译依赖）
+      - name: 安装基础工具
         run: |
           sudo apt-get update -y
           sudo apt-get install -y musl-tools tree wget findutils gcc libc6-dev
@@ -25,242 +25,163 @@ jobs:
           done
           echo "✅ 基础工具安装完成"
 
-      - name: 配置静态Python 3.11（强制绝对路径）
+      - name: 下载并安装达梦客户端
         run: |
-          # 定义Python版本和下载地址
+          # 使用提供的达梦客户端包链接
+          DM_CLIENT_URL="https://github.com/2758003362/dabao/releases/download/1.2.1/dm8_20250506_x86_rh7_64.tar.gz"
+          DM_CLIENT_TAR="dm8_client.tar.gz"
+          DM_INSTALL_DIR="/opt/dmdbms"  # 客户端安装根目录
+          
+          # 下载客户端包
+          if ! wget --retry-connrefused --waitretry=3 --read-timeout=30 --timeout=20 -t 5 \
+                   "$DM_CLIENT_URL" -O "$DM_CLIENT_TAR"; then
+            echo "错误：达梦客户端下载失败"
+            exit 1
+          fi
+          
+          # 解压客户端（自动适配包内结构）
+          sudo mkdir -p "$DM_INSTALL_DIR"
+          if ! sudo tar -xzf "$DM_CLIENT_TAR" -C "$DM_INSTALL_DIR"; then
+            echo "错误：达梦客户端解压失败"
+            exit 1
+          fi
+          
+          # 智能定位库文件和头文件路径（适配不同包结构）
+          echo "检测达梦客户端目录结构..."
+          DM_LIB_PATH=$(find "$DM_INSTALL_DIR" -name "libdmdpi.so" | xargs dirname | head -n 1)
+          DM_INCLUDE_PATH=$(find "$DM_INSTALL_DIR" -name "dmdbai.h" | xargs dirname | head -n 1)
+          
+          # 验证关键路径
+          if [ -z "$DM_LIB_PATH" ] || [ -z "$DM_INCLUDE_PATH" ]; then
+            echo "错误：未找到达梦客户端关键文件（libdmdpi.so或dmdbai.h）"
+            echo "客户端目录结构："
+            tree "$DM_INSTALL_DIR"
+            exit 1
+          fi
+          
+          # 设置环境变量
+          echo "DM_HOME=$DM_INSTALL_DIR" >> $GITHUB_ENV
+          echo "DM_LIB_PATH=$DM_LIB_PATH" >> $GITHUB_ENV
+          echo "DM_INCLUDE_PATH=$DM_INCLUDE_PATH" >> $GITHUB_ENV
+          echo "✅ 达梦客户端安装完成"
+          echo "库文件路径：$DM_LIB_PATH"
+          echo "头文件路径：$DM_INCLUDE_PATH"
+
+      - name: 配置静态Python 3.11
+        run: |
           PYTHON_TAR="cpython-3.11.8+20240224-x86_64-unknown-linux-musl-install_only.tar.gz"
           PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20240224/$PYTHON_TAR"
           EXPECTED_SHA256="08e1ebf51b5965e23f8e68664d17274c1cdabb5b2d7509a2003920e5d58172c7"
           
-          # 下载Python压缩包
-          if ! wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 \
-                   "$PYTHON_URL" -O "$PYTHON_TAR"; then
-            echo "错误：Python压缩包下载失败"
-            exit 1
-          fi
-          
-          # 校验SHA256
-          ACTUAL_SHA256=$(sha256sum "$PYTHON_TAR" | awk '{print $1}')
-          if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+          # 下载并验证Python
+          wget "$PYTHON_URL" -O "$PYTHON_TAR"
+          if [ "$(sha256sum "$PYTHON_TAR" | awk '{print $1}')" != "$EXPECTED_SHA256" ]; then
             echo "错误：Python SHA256不匹配"
-            echo "实际值: $ACTUAL_SHA256"
-            echo "预期值: $EXPECTED_SHA256"
             exit 1
           fi
           
-          # 解压Python（保留原始结构，使用绝对路径解压）
+          # 解压并定位Python
           mkdir -p "$GITHUB_WORKSPACE/python-musl"
-          if ! tar -xzvf "$PYTHON_TAR" -C "$GITHUB_WORKSPACE/python-musl"; then
-            echo "错误：Python解压失败"
-            exit 1
-          fi
+          tar -xzvf "$PYTHON_TAR" -C "$GITHUB_WORKSPACE/python-musl"
           
-          # 强制使用绝对路径查找Python可执行文件
-          echo "在$GITHUB_WORKSPACE/python-musl中搜索Python可执行文件..."
           PYTHON_BIN=$(find "$GITHUB_WORKSPACE/python-musl" -name "python3.11" -type f -executable | head -n 1)
-          
-          # 如果找不到python3.11，尝试找python3并验证版本
           if [ -z "$PYTHON_BIN" ]; then
-            echo "未找到python3.11，尝试查找python3..."
             PYTHON_BIN=$(find "$GITHUB_WORKSPACE/python-musl" -name "python3" -type f -executable | head -n 1)
-            
-            # 验证找到的python3是否为3.11版本
-            if [ -n "$PYTHON_BIN" ]; then
-              PYTHON_VERSION=$("$PYTHON_BIN" --version 2>&1 | awk '{print $2}')
-              if [[ ! "$PYTHON_VERSION" =~ ^3\.11\. ]]; then
-                echo "错误：找到的python3版本不是3.11.x，实际版本：$PYTHON_VERSION"
-                PYTHON_BIN=""  # 清空无效路径
-              fi
+            if [[ -z "$PYTHON_BIN" || ! "$($PYTHON_BIN --version 2>&1)" =~ "3.11" ]]; then
+              echo "错误：未找到Python 3.11"
+              exit 1
             fi
           fi
-          
-          # 最终验证Python路径
-          if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            echo "错误：未找到有效的Python 3.11可执行文件"
-            echo "解压后的完整目录结构："
-            tree "$GITHUB_WORKSPACE/python-musl"  # 输出完整结构
-            exit 1
-          fi
-          
-          # 确保路径是绝对路径
           PYTHON_BIN=$(realpath "$PYTHON_BIN")
-          echo "找到Python可执行文件：$PYTHON_BIN"
           
-          # 验证静态链接属性
-          if ! file "$PYTHON_BIN" | grep -q "statically linked"; then
-            echo "错误：Python不是静态链接版本"
+          # 配置Python路径
+          PYTHON_INCLUDE=$(realpath "$(dirname "$PYTHON_BIN")/../include/python3.11")
+          PYTHON_LIB=$(realpath "$(dirname "$PYTHON_BIN")/../lib/python3.11")
+          if [ ! -d "$PYTHON_INCLUDE" ] || [ ! -d "$PYTHON_LIB" ]; then
+            echo "错误：Python头文件/库目录不存在"
             exit 1
           fi
           
-          # 计算头文件和库的绝对路径
-          PYTHON_BIN_DIR=$(dirname "$PYTHON_BIN")
-          PYTHON_INCLUDE=$(realpath "$PYTHON_BIN_DIR/../include/python3.11")
-          PYTHON_LIB=$(realpath "$PYTHON_BIN_DIR/../lib/python3.11")
-          
-          # 容错处理：搜索备选路径
-          if [ ! -d "$PYTHON_INCLUDE" ]; then
-            echo "警告：标准头文件目录不存在，搜索备选路径..."
-            PYTHON_INCLUDE=$(find "$GITHUB_WORKSPACE/python-musl" -type d -name "python3.11" -path "*/include/*" | head -n 1)
-          fi
-          if [ ! -d "$PYTHON_LIB" ]; then
-            echo "警告：标准库目录不存在，搜索备选路径..."
-            PYTHON_LIB=$(find "$GITHUB_WORKSPACE/python-musl" -type d -name "site-packages" | head -n 1 | sed 's/\/site-packages//')
-          fi
-          
-          # 验证头文件和库路径
-          if [ -z "$PYTHON_INCLUDE" ] || [ ! -d "$PYTHON_INCLUDE" ]; then
-            echo "错误：未找到Python头文件目录"
-            exit 1
-          fi
-          if [ -z "$PYTHON_LIB" ] || [ ! -d "$PYTHON_LIB" ]; then
-            echo "错误：未找到Python库目录"
-            exit 1
-          fi
-          
-          # 输出所有路径供调试
-          echo "最终确定的路径："
-          echo "PYTHON_BIN: $PYTHON_BIN"
-          echo "PYTHON_INCLUDE: $PYTHON_INCLUDE"
-          echo "PYTHON_LIB: $PYTHON_LIB"
-          
-          # 设置环境变量（强制绝对路径）
+          # 设置环境变量
           echo "PYTHON_BIN=$PYTHON_BIN" >> $GITHUB_ENV
           echo "PYTHON_INCLUDE=$PYTHON_INCLUDE" >> $GITHUB_ENV
           echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
-          echo "✅ Python 3.11（musl静态版）配置完成"
+          echo "✅ Python 3.11配置完成"
 
       - name: 编译静态libaio
         run: |
           wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
-          tar -xzf libaio-libaio-0.3.113.tar.gz
-          cd libaio-libaio-0.3.113
+          tar -xzf libaio-libaio-0.3.113.tar.gz && cd libaio-libaio-0.3.113
           
+          # 修改Makefile适配musl
           sed -i.bak "s|^CC\s*=.*$|CC = musl-gcc|" src/Makefile
           sed -i "s|^CFLAGS\s*=.*$|CFLAGS = -fPIC -static -I/usr/include -D_GNU_SOURCE -Wall|" src/Makefile
           sed -i "s|^LDFLAGS\s*=.*$|LDFLAGS = -static|" src/Makefile
           
+          # 修复编译错误
           find src/ -name "*.c" -exec sed -i -e '/#include <bits\/wordsize.h>/d' -e '1i #define __WORDSIZE 64' {} \;
           
+          # 安装libaio
           sudo cp src/libaio.h /usr/include/
-          if [ ! -f "/usr/include/libaio.h" ]; then
-            echo "错误：libaio.h复制失败"
-            exit 1
-          fi
-          
           make V=1
-          
           LIB_AIO_SO=$(find src/ -name "libaio.so.*" | sort -V | tail -n 1)
-          if [ -z "$LIB_AIO_SO" ] || [ ! -f "$LIB_AIO_SO" ]; then
-            echo "错误：未找到libaio库文件"
-            ls -l src/
-            exit 1
-          fi
-          
           sudo cp "$LIB_AIO_SO" /usr/lib/x86_64-linux-gnu/
           sudo ln -sf "$(basename "$LIB_AIO_SO")" /usr/lib/x86_64-linux-gnu/libaio.so.1
-          LIB_AIO_PATH="/usr/lib/x86_64-linux-gnu/libaio.so.1"
-          echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
+          
+          echo "LIB_AIO_PATH=/usr/lib/x86_64-linux-gnu/libaio.so.1" >> $GITHUB_ENV
           echo "✅ libaio编译完成"
           cd ..
 
-      - name: 从达梦官网源码安装dmPython
+      - name: 编译安装dmPython
         run: |
-          # 读取环境变量（绝对路径）
+          # 读取环境变量
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           PYTHON_INCLUDE="${{ env.PYTHON_INCLUDE }}"
           PYTHON_LIB="${{ env.PYTHON_LIB }}"
+          DM_HOME="${{ env.DM_HOME }}"
+          DM_INCLUDE_PATH="${{ env.DM_INCLUDE_PATH }}"
+          DM_LIB_PATH="${{ env.DM_LIB_PATH }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           
-          # 终极验证：检查Python可执行文件是否存在
-          if [ ! -f "$PYTHON_BIN" ]; then
-            echo "错误：Python可执行文件[$PYTHON_BIN]不存在"
-            echo "工作目录：$(pwd)"
-            echo "Python安装目录结构："
-            tree "$(dirname "$PYTHON_BIN" | sed 's/\/bin//')"
-            exit 1
-          fi
-          
-          # 验证执行权限
-          if [ ! -x "$PYTHON_BIN" ]; then
-            echo "错误：Python可执行文件[$PYTHON_BIN]没有执行权限"
-            chmod +x "$PYTHON_BIN"  # 尝试添加权限
-            if [ ! -x "$PYTHON_BIN" ]; then
-              exit 1
-            fi
-          fi
-          
-          # 验证其他依赖路径
-          for path in "$PYTHON_INCLUDE" "$PYTHON_LIB" "$LIB_AIO_PATH"; do
-            if [ -z "$path" ] || [ ! -e "$path" ]; then
+          # 验证依赖路径
+          for path in "$PYTHON_BIN" "$DM_INCLUDE_PATH" "$DM_LIB_PATH" "$LIB_AIO_PATH"; do
+            if [ ! -e "$path" ]; then
               echo "错误：依赖路径[$path]无效"
               exit 1
             fi
             echo "✅ 依赖路径[$path]有效"
           done
           
-          # 检查musl-gcc是否存在
-          if ! command -v musl-gcc &> /dev/null; then
-            echo "错误：musl-gcc未安装，尝试重新安装..."
-            sudo apt-get install -y musl-tools
-            if ! command -v musl-gcc &> /dev/null; then
-              echo "错误：musl-gcc安装失败"
-              exit 1
-            fi
-          fi
-          
           # 升级pip
-          echo "升级pip到25.2版本..."
           "$PYTHON_BIN" -m pip install pip==25.2 -i https://pypi.org/simple/
           
-          # 下载dmPython源码包
-          echo "下载dmPython源码包..."
+          # 下载dmPython源码
           DM_PYTHON_SRC_URL="https://raw.githubusercontent.com/2758003362/dabao/master/dmPython.tar.gz"
-          
-          if ! wget --retry-connrefused --waitretry=3 --read-timeout=30 --timeout=20 -t 5 \
-                   "$DM_PYTHON_SRC_URL" -O "dmPython.tar.gz"; then
-            echo "错误：dmPython源码包下载失败！"
-            exit 1
-          fi
-          
-          # 解压并编译安装
-          echo "查看下载的文件内容..."
-          file dmPython.tar.gz
-          
-          echo "创建并解压到明确的目录..."
-          mkdir -p dmPython-src
-          if ! tar -xzf dmPython.tar.gz -C dmPython-src --strip-components=1; then
-            echo "错误：dmPython解压失败"
-            exit 1
-          fi
-          
-          echo "查看解压后的文件..."
-          ls -la dmPython-src
-          
+          wget "$DM_PYTHON_SRC_URL" -O "dmPython.tar.gz"
+          mkdir -p dmPython-src && tar -xzf dmPython.tar.gz -C dmPython-src --strip-components=1
           cd dmPython-src
           
-          echo "用musl-gcc编译dmPython..."
-          # 强制使用绝对路径编译
+          # 编译dmPython（关联达梦客户端）
+          echo "编译dmPython..."
           CC="musl-gcc" \
-          CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC -DDM_USE_AIO=1" \
-          LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
-          "$PYTHON_BIN" setup.py install
+          CFLAGS="-I$PYTHON_INCLUDE -I$DM_INCLUDE_PATH -fPIC -DDM_USE_AIO=1" \
+          LDFLAGS="-L$PYTHON_LIB -L$DM_LIB_PATH -L/usr/lib/x86_64-linux-gnu -ldmdpi -laio -static" \
+          "$PYTHON_BIN" setup.py install --dm-home="$DM_HOME"
           
           cd ..
           
           # 验证安装
           if ! "$PYTHON_BIN" -c "import dmPython" &> /dev/null; then
-            echo "错误：dmPython安装失败（编译或依赖问题）"
-            "$PYTHON_BIN" -c "import dmPython" 2>&1  # 输出具体错误
+            echo "错误：dmPython安装失败，详细错误："
+            "$PYTHON_BIN" -c "import dmPython" 2>&1
             exit 1
           fi
           DM_VERSION=$("$PYTHON_BIN" -c 'import dmPython; print(f"dmPython版本：{dmPython.__version__}")')
           echo "✅ $DM_VERSION 安装完成"
 
-      - name: 安装其他Python依赖
+      - name: 安装其他依赖
         run: |
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
-          
-          echo "安装其他Python依赖..."
           "$PYTHON_BIN" -m pip install \
             pandas==2.1.4 \
             flask==2.3.3 \
@@ -273,7 +194,6 @@ jobs:
           for lib in dmPython pandas flask werkzeug; do
             if ! "$PYTHON_BIN" -c "import $lib" &> /dev/null; then
               echo "错误：[$lib]导入失败"
-              "$PYTHON_BIN" -c "import $lib" 2>&1
               exit 1
             fi
           done
@@ -287,51 +207,31 @@ jobs:
           fi
           
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
-          PYTHON_LIB="${{ env.PYTHON_LIB }}"
+          DM_LIB_PATH="${{ env.DM_LIB_PATH }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           
-          # 二次验证libaio路径
-          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
-            if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-              echo "错误：libaio路径无效"
-              exit 1
-            fi
-          fi
-          
-          # 打包命令
+          # 打包应用（包含达梦库）
           "$PYTHON_BIN" -m PyInstaller --onefile --name myapp-linux \
-            --paths="$PYTHON_LIB/site-packages" \
+            --paths="$PYTHON_BIN/../lib/python3.11/site-packages" \
+            --paths="$DM_LIB_PATH" \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
             --hidden-import=dmPython._dmPython \
-            --hidden-import=flask \
-            --hidden-import=pandas \
-            --hidden-import=pandas.core \
-            --hidden-import=pandas.io \
+            --add-binary="$DM_LIB_PATH/libdmdpi.so:." \
             --add-binary="$LIB_AIO_PATH:." \
             --noupx \
             ./main.py
           
+          # 验证产物
           if [ ! -f "dist/myapp-linux" ]; then
             echo "错误：打包失败"
-            if [ -f "build/myapp-linux/warn-myapp-linux.txt" ]; then
-              cat build/myapp-linux/warn-myapp-linux.txt
-            fi
             exit 1
-          fi
-          
-          # 验证产物是否为静态链接
-          if ! file dist/myapp-linux | grep -q "statically linked"; then
-            echo "警告：产物不是全静态链接，可能存在兼容性问题"
-          else
-            echo "✅ 产物为全静态链接（支持所有Linux系统）"
           fi
           echo "产物信息："
           file dist/myapp-linux
           echo "✅ 打包完成"
 
-      - name: 保存打包产物
+      - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
           name: myapp-musl-static
@@ -348,11 +248,11 @@ jobs:
         with:
           name: myapp-musl-static
 
-      - name: 创建GitHub Release
+      - name: 创建Release
         uses: softprops/action-gh-release@v2
         with:
           files: myapp-linux
           generate_release_notes: true
-          name: "v${{ github.ref_name }}（musl静态版，全Linux兼容）"
+          name: "v${{ github.ref_name }}（musl静态版）"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
