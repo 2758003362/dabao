@@ -25,8 +25,9 @@ jobs:
           done
           echo "✅ 基础工具安装完成"
 
-      - name: 配置静态Python 3.11（强化路径查找）
+      - name: 配置静态Python 3.11（强制绝对路径）
         run: |
+          # 定义Python版本和下载地址
           PYTHON_TAR="cpython-3.11.8+20240224-x86_64-unknown-linux-musl-install_only.tar.gz"
           PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20240224/$PYTHON_TAR"
           EXPECTED_SHA256="08e1ebf51b5965e23f8e68664d17274c1cdabb5b2d7509a2003920e5d58172c7"
@@ -47,35 +48,43 @@ jobs:
             exit 1
           fi
           
-          # 解压Python（保留原始目录结构，避免路径猜测错误）
-          mkdir -p python-musl
-          if ! tar -xzvf "$PYTHON_TAR" -C python-musl; then
+          # 解压Python（保留原始结构，使用绝对路径解压）
+          mkdir -p "$GITHUB_WORKSPACE/python-musl"
+          if ! tar -xzvf "$PYTHON_TAR" -C "$GITHUB_WORKSPACE/python-musl"; then
             echo "错误：Python解压失败"
             exit 1
           fi
           
-          # 强化路径查找：先找python3.11，找不到再找python3，确保版本正确
-          echo "查找Python可执行文件..."
-          PYTHON_BIN=$(find python-musl -name "python3.11" -type f -executable | head -n 1)
+          # 强制使用绝对路径查找Python可执行文件
+          echo "在$GITHUB_WORKSPACE/python-musl中搜索Python可执行文件..."
+          PYTHON_BIN=$(find "$GITHUB_WORKSPACE/python-musl" -name "python3.11" -type f -executable | head -n 1)
+          
+          # 如果找不到python3.11，尝试找python3并验证版本
           if [ -z "$PYTHON_BIN" ]; then
             echo "未找到python3.11，尝试查找python3..."
-            PYTHON_BIN=$(find python-musl -name "python3" -type f -executable | head -n 1)
+            PYTHON_BIN=$(find "$GITHUB_WORKSPACE/python-musl" -name "python3" -type f -executable | head -n 1)
+            
+            # 验证找到的python3是否为3.11版本
+            if [ -n "$PYTHON_BIN" ]; then
+              PYTHON_VERSION=$("$PYTHON_BIN" --version 2>&1 | awk '{print $2}')
+              if [[ ! "$PYTHON_VERSION" =~ ^3\.11\. ]]; then
+                echo "错误：找到的python3版本不是3.11.x，实际版本：$PYTHON_VERSION"
+                PYTHON_BIN=""  # 清空无效路径
+              fi
+            fi
           fi
           
-          # 验证Python路径和版本
+          # 最终验证Python路径
           if [ -z "$PYTHON_BIN" ] || [ ! -f "$PYTHON_BIN" ]; then
-            echo "错误：未找到Python可执行文件"
-            echo "解压后的目录结构："
-            tree python-musl  # 输出完整结构便于调试
+            echo "错误：未找到有效的Python 3.11可执行文件"
+            echo "解压后的完整目录结构："
+            tree "$GITHUB_WORKSPACE/python-musl"  # 输出完整结构
             exit 1
           fi
           
-          # 验证Python版本是否为3.11.x
-          PYTHON_VERSION=$("$PYTHON_BIN" --version 2>&1 | awk '{print $2}')
-          if [[ ! "$PYTHON_VERSION" =~ ^3\.11\. ]]; then
-            echo "错误：Python版本不是3.11.x，实际版本：$PYTHON_VERSION"
-            exit 1
-          fi
+          # 确保路径是绝对路径
+          PYTHON_BIN=$(realpath "$PYTHON_BIN")
+          echo "找到Python可执行文件：$PYTHON_BIN"
           
           # 验证静态链接属性
           if ! file "$PYTHON_BIN" | grep -q "statically linked"; then
@@ -83,43 +92,42 @@ jobs:
             exit 1
           fi
           
-          # 基于实际找到的Python路径计算头文件和库路径
+          # 计算头文件和库的绝对路径
           PYTHON_BIN_DIR=$(dirname "$PYTHON_BIN")
           PYTHON_INCLUDE=$(realpath "$PYTHON_BIN_DIR/../include/python3.11")
           PYTHON_LIB=$(realpath "$PYTHON_BIN_DIR/../lib/python3.11")
           
-          # 验证头文件和库路径（容错处理：可能存在不同目录结构）
+          # 容错处理：搜索备选路径
           if [ ! -d "$PYTHON_INCLUDE" ]; then
-            echo "警告：标准头文件目录不存在，尝试备选路径..."
-            PYTHON_INCLUDE=$(find python-musl -name "python3.11" -type d -path "*/include/*" | head -n 1)
-            if [ -z "$PYTHON_INCLUDE" ]; then
-              echo "错误：未找到Python头文件目录"
-              exit 1
-            fi
+            echo "警告：标准头文件目录不存在，搜索备选路径..."
+            PYTHON_INCLUDE=$(find "$GITHUB_WORKSPACE/python-musl" -type d -name "python3.11" -path "*/include/*" | head -n 1)
           fi
           if [ ! -d "$PYTHON_LIB" ]; then
-            echo "警告：标准库目录不存在，尝试备选路径..."
-            PYTHON_LIB=$(find python-musl -name "site-packages" -type d | head -n 1 | sed 's/\/site-packages//')
-            if [ -z "$PYTHON_LIB" ]; then
-              echo "错误：未找到Python库目录"
-              exit 1
-            fi
+            echo "警告：标准库目录不存在，搜索备选路径..."
+            PYTHON_LIB=$(find "$GITHUB_WORKSPACE/python-musl" -type d -name "site-packages" | head -n 1 | sed 's/\/site-packages//')
           fi
           
-          # 最终验证所有路径
-          echo "Python可执行文件路径：$PYTHON_BIN"
-          echo "Python头文件目录：$PYTHON_INCLUDE"
-          echo "Python库目录：$PYTHON_LIB"
-          if [ ! -f "$PYTHON_BIN" ] || [ ! -d "$PYTHON_INCLUDE" ] || [ ! -d "$PYTHON_LIB" ]; then
-            echo "错误：Python关键路径验证失败"
+          # 验证头文件和库路径
+          if [ -z "$PYTHON_INCLUDE" ] || [ ! -d "$PYTHON_INCLUDE" ]; then
+            echo "错误：未找到Python头文件目录"
+            exit 1
+          fi
+          if [ -z "$PYTHON_LIB" ] || [ ! -d "$PYTHON_LIB" ]; then
+            echo "错误：未找到Python库目录"
             exit 1
           fi
           
-          # 设置环境变量
+          # 输出所有路径供调试
+          echo "最终确定的路径："
+          echo "PYTHON_BIN: $PYTHON_BIN"
+          echo "PYTHON_INCLUDE: $PYTHON_INCLUDE"
+          echo "PYTHON_LIB: $PYTHON_LIB"
+          
+          # 设置环境变量（强制绝对路径）
           echo "PYTHON_BIN=$PYTHON_BIN" >> $GITHUB_ENV
           echo "PYTHON_INCLUDE=$PYTHON_INCLUDE" >> $GITHUB_ENV
           echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
-          echo "✅ Python 3.11（musl静态版）配置完成，版本：$PYTHON_VERSION"
+          echo "✅ Python 3.11（musl静态版）配置完成"
 
       - name: 编译静态libaio
         run: |
@@ -155,20 +163,30 @@ jobs:
           echo "✅ libaio编译完成"
           cd ..
 
-      - name: 从达梦官网源码安装dmPython（解决登录下载限制）
+      - name: 从达梦官网源码安装dmPython
         run: |
-          # 读取环境变量
+          # 读取环境变量（绝对路径）
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           PYTHON_INCLUDE="${{ env.PYTHON_INCLUDE }}"
           PYTHON_LIB="${{ env.PYTHON_LIB }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           
-          # 强制验证Python路径（核心修复点）
+          # 终极验证：检查Python可执行文件是否存在
           if [ ! -f "$PYTHON_BIN" ]; then
             echo "错误：Python可执行文件[$PYTHON_BIN]不存在"
-            echo "当前目录结构："
-            tree python-musl  # 输出结构帮助定位问题
+            echo "工作目录：$(pwd)"
+            echo "Python安装目录结构："
+            tree "$(dirname "$PYTHON_BIN" | sed 's/\/bin//')"
             exit 1
+          fi
+          
+          # 验证执行权限
+          if [ ! -x "$PYTHON_BIN" ]; then
+            echo "错误：Python可执行文件[$PYTHON_BIN]没有执行权限"
+            chmod +x "$PYTHON_BIN"  # 尝试添加权限
+            if [ ! -x "$PYTHON_BIN" ]; then
+              exit 1
+            fi
           fi
           
           # 验证其他依赖路径
@@ -221,7 +239,7 @@ jobs:
           cd dmPython-src
           
           echo "用musl-gcc编译dmPython..."
-          # 编译命令（使用绝对路径确保正确性）
+          # 强制使用绝对路径编译
           CC="musl-gcc" \
           CFLAGS="-I$PYTHON_INCLUDE -I/usr/include -fPIC -DDM_USE_AIO=1" \
           LDFLAGS="-L$PYTHON_LIB -L/usr/lib/x86_64-linux-gnu -laio -static" \
