@@ -52,7 +52,7 @@ jobs:
             exit 1
           fi
 
-      # 步骤4：下载+安装达梦客户端（重点优化下载卡住）
+      # 步骤4：下载+安装达梦客户端（修复wget命令格式）
       - name: 4. 下载并安装达梦客户端
         run: |
           # 核心路径配置
@@ -62,23 +62,19 @@ jobs:
           ISO_MOUNT_DIR="/mnt/dm_iso"
           DM_INSTALL_DIR="/opt/dmdbms"
 
-          # 4.1 大文件下载优化（断点续传+多重试）
+          # 4.1 修复：wget参数合并到同一行，避免解析错误
           echo "🔄 开始下载达梦客户端包（888M）..."
-          if ! wget \
-            --continue \          # 断点续传：中断后无需重下
-            --retry-connrefused \ # 连接拒绝时自动重试
-            --waitretry=5 \       # 重试间隔5秒
-            --read-timeout=60 \   # 读取超时60秒
-            --timeout=30 \        # 连接超时30秒
-            --tries=10 \          # 总重试10次
-            --progress=bar:force \# 强制显示进度条
-            "$DM_TAR_URL" -O "$DM_TAR_FILE"; then
+          if ! wget --continue --retry-connrefused --waitretry=5 --read-timeout=60 --timeout=30 --tries=10 --progress=bar:force "$DM_TAR_URL" -O "$DM_TAR_FILE"; then
               echo "❌ 客户端包下载失败！建议：1. 手动上传包到仓库；2. 重新触发流程"
               exit 1
           fi
 
-          # 4.2 校验文件完整性
-          MIN_VALID_SIZE=$((888 * 1024 * 1024))
+          # 4.2 校验文件完整性（避免空文件/半截文件）
+          if [ ! -f "$DM_TAR_FILE" ]; then
+            echo "❌ 客户端包未下载成功（文件不存在）"
+            exit 1
+          fi
+          MIN_VALID_SIZE=$((888 * 1024 * 1024))  # 888M
           ACTUAL_SIZE=$(du -b "$DM_TAR_FILE" | awk '{print $1}')
           if [ "$ACTUAL_SIZE" -lt "$MIN_VALID_SIZE" ]; then
             echo "❌ 客户端包不完整（实际：$((ACTUAL_SIZE/1024/1024))M，需≥888M）"
@@ -90,28 +86,48 @@ jobs:
           # 4.3 解压tar包+提取ISO
           sudo rm -rf "$TMP_EXTRACT_DIR" "$ISO_MOUNT_DIR" "$DM_INSTALL_DIR"
           sudo mkdir -p "$TMP_EXTRACT_DIR"
-          sudo tar -xzf "$DM_TAR_FILE" -C "$TMP_EXTRACT_DIR"
+          if ! sudo tar -xzf "$DM_TAR_FILE" -C "$TMP_EXTRACT_DIR"; then
+            echo "❌ tar包解压失败（文件可能损坏）"
+            exit 1
+          fi
           
+          # 查找ISO文件
           DM_ISO_FILE=$(find "$TMP_EXTRACT_DIR" -name "*.iso" -type f | head -n 1)
+          if [ -z "$DM_ISO_FILE" ]; then
+            echo "❌ 未找到ISO文件，tar包内结构："
+            tree "$TMP_EXTRACT_DIR"
+            exit 1
+          fi
+          # 提取ISO内容
           sudo mkdir -p "$ISO_MOUNT_DIR"
-          sudo xorriso -osirrox on -indev "$DM_ISO_FILE" -extract / "$ISO_MOUNT_DIR"
+          if ! sudo xorriso -osirrox on -indev "$DM_ISO_FILE" -extract / "$ISO_MOUNT_DIR"; then
+            echo "❌ ISO提取失败"
+            exit 1
+          fi
 
           # 4.4 运行安装程序（静默安装客户端）
           DM_INSTALLER=$(find "$ISO_MOUNT_DIR" -name "DMInstall.bin" -type f | head -n 1)
+          if [ -z "$DM_INSTALLER" ]; then
+            echo "❌ 未找到DMInstall.bin，ISO内结构："
+            tree "$ISO_MOUNT_DIR"
+            exit 1
+          fi
           sudo chmod +x "$DM_INSTALLER"
           sudo mkdir -p "$DM_INSTALL_DIR"
           sudo chown -R dmdba:dinstall "$DM_INSTALL_DIR"
           
+          # 静默安装客户端
           if ! sudo -u dmdba "$DM_INSTALLER" -i -t client -d "$DM_INSTALL_DIR"; then
-            echo "❌ 客户端安装失败"
+            echo "❌ 客户端安装失败（达梦安装程序报错）"
             exit 1
           fi
 
-          # 4.5 配置环境变量
-          DM_LIB=$(find "$DM_INSTALL_DIR" -name "libdmdpi.so" | head -n 1)
-          DM_HEADER=$(find "$DM_INSTALL_DIR" -name "dmdbai.h" | head -n 1)
+          # 4.5 配置环境变量（供后续编译使用）
+          DM_LIB=$(find "$DM_INSTALL_DIR" -name "libdmdpi.so" -type f | head -n 1)
+          DM_HEADER=$(find "$DM_INSTALL_DIR" -name "dmdbai.h" -type f | head -n 1)
           if [ -z "$DM_LIB" ] || [ -z "$DM_HEADER" ]; then
-            echo "❌ 客户端文件缺失"
+            echo "❌ 客户端文件缺失，安装目录结构："
+            tree "$DM_INSTALL_DIR" --dirsfirst | head -50
             exit 1
           fi
           echo "DM_HOME=$DM_INSTALL_DIR" >> $GITHUB_ENV
@@ -127,7 +143,10 @@ jobs:
           EXPECTED_SHA256="08e1ebf51b5965e23f8e68664d17274c1cdabb5b2d7509a2003920e5d58172c7"
 
           # 下载+校验Python
-          wget "$PYTHON_URL" -O "$PYTHON_TAR"
+          if ! wget "$PYTHON_URL" -O "$PYTHON_TAR"; then
+            echo "错误：Python包下载失败"
+            exit 1
+          fi
           if [ "$(sha256sum "$PYTHON_TAR" | awk '{print $1}')" != "$EXPECTED_SHA256" ]; then
             echo "错误：Python SHA256不匹配"
             exit 1
@@ -137,44 +156,75 @@ jobs:
           PYTHON_DIR="$GITHUB_WORKSPACE/python-musl"
           rm -rf "$PYTHON_DIR"
           mkdir -p "$PYTHON_DIR"
-          tar -xzvf "$PYTHON_TAR" -C "$PYTHON_DIR"
+          if ! tar -xzvf "$PYTHON_TAR" -C "$PYTHON_DIR"; then
+            echo "错误：Python包解压失败"
+            exit 1
+          fi
 
+          # 查找Python可执行文件
           PYTHON_BIN=$(find "$PYTHON_DIR" -name "python3.11" -type f -executable | head -n 1)
           if [ -z "$PYTHON_BIN" ]; then
             PYTHON_BIN=$(find "$PYTHON_DIR" -name "python3" -type f -executable | head -n 1)
+            if [[ -z "$PYTHON_BIN" || ! "$($PYTHON_BIN --version 2>&1)" =~ "3.11" ]]; then
+              echo "错误：未找到Python 3.11"
+              exit 1
+            fi
           fi
           PYTHON_BIN=$(realpath "$PYTHON_BIN")
 
           # 配置环境变量
+          PYTHON_INCLUDE=$(realpath "$(dirname "$PYTHON_BIN")/../include/python3.11")
+          PYTHON_LIB=$(realpath "$(dirname "$PYTHON_BIN")/../lib/python3.11")
+          if [ ! -d "$PYTHON_INCLUDE" ] || [ ! -d "$PYTHON_LIB" ]; then
+            echo "错误：Python头文件/库目录不存在"
+            exit 1
+          fi
           echo "PYTHON_BIN=$PYTHON_BIN" >> $GITHUB_ENV
-          echo "PYTHON_INCLUDE=$(realpath "$(dirname "$PYTHON_BIN")/../include/python3.11")" >> $GITHUB_ENV
-          echo "PYTHON_LIB=$(realpath "$(dirname "$PYTHON_BIN")/../lib/python3.11")" >> $GITHUB_ENV
+          echo "PYTHON_INCLUDE=$PYTHON_INCLUDE" >> $GITHUB_ENV
+          echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
           echo "✅ Python 3.11配置完成"
 
       # 步骤6：编译静态libaio
       - name: 6. 编译静态libaio
         run: |
-          wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
-          tar -xzf libaio-libaio-0.3.113.tar.gz && cd libaio-libaio-0.3.113
+          # 下载libaio源码
+          LIB_AIO_URL="https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz"
+          if ! wget "$LIB_AIO_URL" -O "libaio-libaio-0.3.113.tar.gz"; then
+            echo "错误：libaio源码下载失败"
+            exit 1
+          fi
+          # 解压
+          if ! tar -xzf "libaio-libaio-0.3.113.tar.gz"; then
+            echo "错误：libaio源码解压失败"
+            exit 1
+          fi
+          cd libaio-libaio-0.3.113 || exit 1
 
           # 修改Makefile适配musl
           sed -i.bak "s|^CC\s*=.*$|CC = musl-gcc|" src/Makefile
           sed -i "s|^CFLAGS\s*=.*$|CFLAGS = -fPIC -static -I/usr/include -D_GNU_SOURCE -Wall|" src/Makefile
           sed -i "s|^LDFLAGS\s*=.*$|LDFLAGS = -static|" src/Makefile
 
-          # 修复编译错误
+          # 修复编译错误（移除bits/wordsize.h依赖）
           find src/ -name "*.c" -exec sed -i -e '/#include <bits\/wordsize.h>/d' -e '1i #define __WORDSIZE 64' {} \;
 
-          # 安装libaio
+          # 编译+安装
           sudo cp src/libaio.h /usr/include/
-          make V=1
+          if ! make V=1; then
+            echo "错误：libaio编译失败"
+            exit 1
+          fi
           LIB_AIO_SO=$(find src/ -name "libaio.so.*" | sort -V | tail -n 1)
+          if [ -z "$LIB_AIO_SO" ]; then
+            echo "错误：未找到编译后的libaio库"
+            exit 1
+          fi
           sudo cp "$LIB_AIO_SO" /usr/lib/x86_64-linux-gnu/
           sudo ln -sf "$(basename "$LIB_AIO_SO")" /usr/lib/x86_64-linux-gnu/libaio.so.1
 
           echo "LIB_AIO_PATH=/usr/lib/x86_64-linux-gnu/libaio.so.1" >> $GITHUB_ENV
           echo "✅ libaio编译完成"
-          cd ..
+          cd .. || exit 1
 
       # 步骤7：编译安装dmPython
       - name: 7. 编译安装dmPython
@@ -188,45 +238,74 @@ jobs:
           DM_INCLUDE_PATH="${{ env.DM_INCLUDE_PATH }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
 
+          # 验证依赖路径
+          for path in "$PYTHON_BIN" "$DM_INCLUDE_PATH" "$DM_LIB_PATH" "$LIB_AIO_PATH"; do
+            if [ ! -e "$path" ]; then
+              echo "错误：依赖路径[$path]无效"
+              exit 1
+            fi
+          done
+
           # 升级pip
-          "$PYTHON_BIN" -m pip install pip==25.2 -i https://pypi.org/simple/
+          if ! "$PYTHON_BIN" -m pip install pip==25.2 -i https://pypi.org/simple/; then
+            echo "错误：pip升级失败"
+            exit 1
+          fi
 
-          # 下载+编译dmPython
-          wget https://raw.githubusercontent.com/2758003362/dabao/master/dmPython.tar.gz -O dmPython.tar.gz
-          mkdir -p dmPython-src && tar -xzf dmPython.tar.gz -C dmPython-src --strip-components=1
-          cd dmPython-src
+          # 下载dmPython源码
+          DM_PYTHON_URL="https://raw.githubusercontent.com/2758003362/dabao/master/dmPython.tar.gz"
+          if ! wget "$DM_PYTHON_URL" -O "dmPython.tar.gz"; then
+            echo "错误：dmPython源码下载失败"
+            exit 1
+          fi
+          # 解压
+          rm -rf dmPython-src
+          mkdir -p dmPython-src
+          if ! tar -xzf "dmPython.tar.gz" -C dmPython-src --strip-components=1; then
+            echo "错误：dmPython源码解压失败"
+            exit 1
+          fi
+          cd dmPython-src || exit 1
 
-          CC="musl-gcc" \
-          CFLAGS="-I$PYTHON_INCLUDE -I$DM_INCLUDE_PATH -fPIC -DDM_USE_AIO=1" \
-          LDFLAGS="-L$PYTHON_LIB -L$DM_LIB_PATH -L/usr/lib/x86_64-linux-gnu -ldmdpi -laio -static" \
-          "$PYTHON_BIN" setup.py install --dm-home="$DM_HOME"
+          # 编译安装（参数合并到同一行）
+          echo "🔄 编译dmPython..."
+          if ! CC="musl-gcc" CFLAGS="-I$PYTHON_INCLUDE -I$DM_INCLUDE_PATH -fPIC -DDM_USE_AIO=1" LDFLAGS="-L$PYTHON_LIB -L$DM_LIB_PATH -L/usr/lib/x86_64-linux-gnu -ldmdpi -laio -static" "$PYTHON_BIN" setup.py install --dm-home="$DM_HOME"; then
+            echo "错误：dmPython编译失败"
+            exit 1
+          fi
 
-          cd ..
+          cd .. || exit 1
 
           # 验证安装
           if ! "$PYTHON_BIN" -c "import dmPython" &> /dev/null; then
-            echo "错误：dmPython安装失败"
+            echo "错误：dmPython安装失败，详细错误："
             "$PYTHON_BIN" -c "import dmPython" 2>&1
             exit 1
           fi
-          echo "✅ dmPython安装完成"
+          DM_VERSION=$("$PYTHON_BIN" -c 'import dmPython; print(f"dmPython版本：{dmPython.__version__}")')
+          echo "✅ $DM_VERSION 安装完成"
 
       # 步骤8：安装业务依赖
       - name: 8. 安装业务依赖
         run: |
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
-          "$PYTHON_BIN" -m pip install \
+          # 安装固定版本依赖
+          if ! "$PYTHON_BIN" -m pip install \
             pandas==2.1.4 \
             flask==2.3.3 \
             werkzeug==2.3.7 \
             pyinstaller==6.16.0 \
             --no-cache-dir \
-            -i https://pypi.org/simple/
+            -i https://pypi.org/simple/; then
+            echo "错误：业务依赖安装失败"
+            exit 1
+          fi
 
           # 验证依赖
           for lib in dmPython pandas flask werkzeug; do
             if ! "$PYTHON_BIN" -c "import $lib" &> /dev/null; then
               echo "错误：[$lib]导入失败"
+              "$PYTHON_BIN" -c "import $lib" 2>&1
               exit 1
             fi
           done
@@ -235,32 +314,34 @@ jobs:
       # 步骤9：静态打包应用
       - name: 9. 静态打包应用
         run: |
+          # 检查主程序
           if [ ! -f "./main.py" ]; then
-            echo "错误：未找到main.py"
+            echo "错误：未找到应用主程序（main.py）"
             exit 1
           fi
 
+          # 读取依赖路径
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           DM_LIB_PATH="${{ env.DM_LIB_PATH }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
 
-          # 打包命令
-          "$PYTHON_BIN" -m PyInstaller --onefile --name myapp-linux \
-            --paths="$PYTHON_LIB/site-packages" \
-            --paths="$DM_LIB_PATH" \
-            --hidden-import=dmPython \
-            --hidden-import=dmPython.dbapi2 \
-            --hidden-import=dmPython._dmPython \
-            --add-binary="$DM_LIB_PATH/libdmdpi.so:." \
-            --add-binary="$LIB_AIO_PATH:." \
-            --noupx \
-            ./main.py
-
-          if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：打包失败"
+          # 打包命令（参数合并，避免解析错误）
+          echo "🔄 打包应用..."
+          if ! "$PYTHON_BIN" -m PyInstaller --onefile --name myapp-linux --paths="$PYTHON_LIB/site-packages" --paths="$DM_LIB_PATH" --hidden-import=dmPython --hidden-import=dmPython.dbapi2 --hidden-import=dmPython._dmPython --add-binary="$DM_LIB_PATH/libdmdpi.so:." --add-binary="$LIB_AIO_PATH:." --noupx ./main.py; then
+            echo "错误：应用打包失败"
+            # 输出打包日志，便于调试
+            if [ -f "build/myapp-linux/warn-myapp-linux.txt" ]; then
+              cat "build/myapp-linux/warn-myapp-linux.txt"
+            fi
             exit 1
           fi
-          echo "✅ 应用打包完成"
+
+          # 验证产物
+          if [ ! -f "dist/myapp-linux" ]; then
+            echo "错误：打包产物不存在"
+            exit 1
+          fi
+          echo "✅ 应用打包完成，产物路径：dist/myapp-linux"
 
       # 步骤10：保存产物
       - name: 10. 保存打包产物
