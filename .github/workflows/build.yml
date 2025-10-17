@@ -1,190 +1,183 @@
-name: 达梦API服务打包（dmdba用户适配）
+name: 达梦API服务打包（下载优化+全流程适配）
 
 on:
   push:
     tags:
-      - 'v*.*.*'
-  workflow_dispatch:
+      - 'v*.*.*'  # 标签推送自动触发
+  workflow_dispatch:  # 手动触发入口
 
 jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出仓库代码
+      # 步骤1：检出仓库代码
+      - name: 1. 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装基础工具
+      # 步骤2：安装基础工具（含ISO处理、编译依赖）
+      - name: 2. 安装基础工具集
         run: |
           sudo apt-get update -y
           sudo apt-get install -y \
             musl-tools tree wget findutils gcc libc6-dev \
-            xorriso  # ISO提取工具
-          # 验证工具
+            xorriso
+          # 验证工具可用性
           for tool in musl-gcc tree wget find gcc xorriso; do
             if ! command -v $tool &> /dev/null; then
-              echo "错误：工具[$tool]安装失败"
+              echo "错误：基础工具[$tool]安装失败，终止流程"
               exit 1
             fi
           done
-          echo "✅ 基础工具安装完成"
+          echo "✅ 基础工具全部安装完成"
 
-      - name: 创建达梦专用用户dmdba（解决用户缺失问题）
+      # 步骤3：创建达梦专用用户dmdba（解决权限问题）
+      - name: 3. 创建dmdba用户及dinstall组
         run: |
-          # 创建dmdba用户组
-          if ! getent group dinstall > /dev/null; then
+          # 创建dinstall组
+          if ! getent group dinstall > /dev/null 2>&1; then
             sudo groupadd dinstall
-            echo "创建用户组dinstall"
+            echo "✅ 创建dinstall用户组"
           fi
-          
-          # 创建dmdba用户并加入组
+          # 创建dmdba用户
           if ! id -u dmdba > /dev/null 2>&1; then
             sudo useradd -g dinstall -m -d /home/dmdba dmdba
-            echo "创建用户dmdba"
+            echo "dmdba:dmdba123" | sudo chpasswd
+            echo "✅ 创建dmdba用户"
           fi
-          
-          # 设置密码（非交互环境临时密码）
-          echo "dmdba:dmdba123" | sudo chpasswd
-          
-          # 验证用户创建
+          # 验证用户状态
           if id -u dmdba > /dev/null 2>&1; then
-            echo "✅ dmdba用户创建完成"
+            echo "✅ dmdba用户状态正常（UID: $(id -u dmdba)，所属组: $(id -g dmdba)）"
           else
-            echo "错误：dmdba用户创建失败"
+            echo "错误：dmdba用户创建失败，终止流程"
             exit 1
           fi
 
-      - name: 下载并运行达梦安装程序（带用户权限）
+      # 步骤4：下载+安装达梦客户端（重点优化下载卡住）
+      - name: 4. 下载并安装达梦客户端
         run: |
-          # 配置路径
+          # 核心路径配置
           DM_TAR_URL="https://github.com/2758003362/dabao/releases/download/1.2.1/dm8_20250506_x86_rh7_64.tar.gz"
           DM_TAR_FILE="dm_client.tar.gz"
           TMP_EXTRACT_DIR="/tmp/dm_extract"
           ISO_MOUNT_DIR="/mnt/dm_iso"
-          DM_INSTALL_DIR="/opt/dmdbms"  # 客户端安装路径
+          DM_INSTALL_DIR="/opt/dmdbms"
 
-          # 1. 下载tar包
-          echo "下载达梦tar包..."
-          if ! wget --retry-connrefused --waitretry=3 --timeout=30 -t 5 \
-                   "$DM_TAR_URL" -O "$DM_TAR_FILE"; then
-            echo "错误：tar包下载失败"
-            exit 1
+          # 4.1 大文件下载优化（断点续传+多重试）
+          echo "🔄 开始下载达梦客户端包（888M）..."
+          if ! wget \
+            --continue \          # 断点续传：中断后无需重下
+            --retry-connrefused \ # 连接拒绝时自动重试
+            --waitretry=5 \       # 重试间隔5秒
+            --read-timeout=60 \   # 读取超时60秒
+            --timeout=30 \        # 连接超时30秒
+            --tries=10 \          # 总重试10次
+            --progress=bar:force \# 强制显示进度条
+            "$DM_TAR_URL" -O "$DM_TAR_FILE"; then
+              echo "❌ 客户端包下载失败！建议：1. 手动上传包到仓库；2. 重新触发流程"
+              exit 1
           fi
 
-          # 2. 解压tar包
-          echo "解压tar包..."
+          # 4.2 校验文件完整性
+          MIN_VALID_SIZE=$((888 * 1024 * 1024))
+          ACTUAL_SIZE=$(du -b "$DM_TAR_FILE" | awk '{print $1}')
+          if [ "$ACTUAL_SIZE" -lt "$MIN_VALID_SIZE" ]; then
+            echo "❌ 客户端包不完整（实际：$((ACTUAL_SIZE/1024/1024))M，需≥888M）"
+            rm -f "$DM_TAR_FILE"
+            exit 1
+          fi
+          echo "✅ 客户端包完整性校验通过"
+
+          # 4.3 解压tar包+提取ISO
+          sudo rm -rf "$TMP_EXTRACT_DIR" "$ISO_MOUNT_DIR" "$DM_INSTALL_DIR"
           sudo mkdir -p "$TMP_EXTRACT_DIR"
-          if ! sudo tar -xzf "$DM_TAR_FILE" -C "$TMP_EXTRACT_DIR"; then
-            echo "错误：tar包解压失败"
-            exit 1
-          fi
-
-          # 3. 提取ISO内容
-          echo "提取ISO内容..."
+          sudo tar -xzf "$DM_TAR_FILE" -C "$TMP_EXTRACT_DIR"
+          
           DM_ISO_FILE=$(find "$TMP_EXTRACT_DIR" -name "*.iso" -type f | head -n 1)
-          if [ -z "$DM_ISO_FILE" ]; then
-            echo "错误：未找到ISO文件"
-            exit 1
-          fi
           sudo mkdir -p "$ISO_MOUNT_DIR"
           sudo xorriso -osirrox on -indev "$DM_ISO_FILE" -extract / "$ISO_MOUNT_DIR"
 
-          # 4. 定位安装程序并授权
+          # 4.4 运行安装程序（静默安装客户端）
           DM_INSTALLER=$(find "$ISO_MOUNT_DIR" -name "DMInstall.bin" -type f | head -n 1)
-          if [ -z "$DM_INSTALLER" ]; then
-            echo "错误：未找到DMInstall.bin"
-            exit 1
-          fi
-          sudo chmod +x "$DM_INSTALLER"  # 赋予执行权限
-
-          # 5. 准备安装目录（赋予dmdba权限）
+          sudo chmod +x "$DM_INSTALLER"
           sudo mkdir -p "$DM_INSTALL_DIR"
-          sudo chown -R dmdba:dinstall "$DM_INSTALL_DIR"  # 关键：让dmdba拥有目录权限
-
-          # 6. 切换到dmdba用户运行安装程序（静默安装客户端）
-          echo "以dmdba用户运行安装程序..."
+          sudo chown -R dmdba:dinstall "$DM_INSTALL_DIR"
+          
           if ! sudo -u dmdba "$DM_INSTALLER" -i -t client -d "$DM_INSTALL_DIR"; then
-            echo "错误：客户端安装失败"
+            echo "❌ 客户端安装失败"
             exit 1
           fi
 
-          # 7. 验证安装结果
-          echo "验证客户端文件..."
+          # 4.5 配置环境变量
           DM_LIB=$(find "$DM_INSTALL_DIR" -name "libdmdpi.so" | head -n 1)
           DM_HEADER=$(find "$DM_INSTALL_DIR" -name "dmdbai.h" | head -n 1)
-
           if [ -z "$DM_LIB" ] || [ -z "$DM_HEADER" ]; then
-            echo "错误：缺少关键文件，安装目录结构："
-            tree "$DM_INSTALL_DIR" --dirsfirst | head -100
+            echo "❌ 客户端文件缺失"
             exit 1
           fi
-
-          # 8. 设置环境变量（供编译使用）
-          DM_LIB_PATH=$(dirname "$DM_LIB")
-          DM_INCLUDE_PATH=$(dirname "$DM_HEADER")
           echo "DM_HOME=$DM_INSTALL_DIR" >> $GITHUB_ENV
-          echo "DM_LIB_PATH=$DM_LIB_PATH" >> $GITHUB_ENV
-          echo "DM_INCLUDE_PATH=$DM_INCLUDE_PATH" >> $GITHUB_ENV
+          echo "DM_LIB_PATH=$(dirname "$DM_LIB")" >> $GITHUB_ENV
+          echo "DM_INCLUDE_PATH=$(dirname "$DM_HEADER")" >> $GITHUB_ENV
           echo "✅ 达梦客户端安装完成"
 
-      - name: 配置静态Python 3.11
+      # 步骤5：配置静态Python 3.11
+      - name: 5. 配置静态Python 3.11
         run: |
           PYTHON_TAR="cpython-3.11.8+20240224-x86_64-unknown-linux-musl-install_only.tar.gz"
           PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20240224/$PYTHON_TAR"
           EXPECTED_SHA256="08e1ebf51b5965e23f8e68664d17274c1cdabb5b2d7509a2003920e5d58172c7"
-          
+
+          # 下载+校验Python
           wget "$PYTHON_URL" -O "$PYTHON_TAR"
           if [ "$(sha256sum "$PYTHON_TAR" | awk '{print $1}')" != "$EXPECTED_SHA256" ]; then
             echo "错误：Python SHA256不匹配"
             exit 1
           fi
-          
-          mkdir -p "$GITHUB_WORKSPACE/python-musl"
-          tar -xzvf "$PYTHON_TAR" -C "$GITHUB_WORKSPACE/python-musl"
-          
-          PYTHON_BIN=$(find "$GITHUB_WORKSPACE/python-musl" -name "python3.11" -type f -executable | head -n 1)
+
+          # 解压+定位Python
+          PYTHON_DIR="$GITHUB_WORKSPACE/python-musl"
+          rm -rf "$PYTHON_DIR"
+          mkdir -p "$PYTHON_DIR"
+          tar -xzvf "$PYTHON_TAR" -C "$PYTHON_DIR"
+
+          PYTHON_BIN=$(find "$PYTHON_DIR" -name "python3.11" -type f -executable | head -n 1)
           if [ -z "$PYTHON_BIN" ]; then
-            PYTHON_BIN=$(find "$GITHUB_WORKSPACE/python-musl" -name "python3" -type f -executable | head -n 1)
-            if [[ -z "$PYTHON_BIN" || ! "$($PYTHON_BIN --version 2>&1)" =~ "3.11" ]]; then
-              echo "错误：未找到Python 3.11"
-              exit 1
-            fi
+            PYTHON_BIN=$(find "$PYTHON_DIR" -name "python3" -type f -executable | head -n 1)
           fi
           PYTHON_BIN=$(realpath "$PYTHON_BIN")
-          
-          PYTHON_INCLUDE=$(realpath "$(dirname "$PYTHON_BIN")/../include/python3.11")
-          PYTHON_LIB=$(realpath "$(dirname "$PYTHON_BIN")/../lib/python3.11")
-          if [ ! -d "$PYTHON_INCLUDE" ] || [ ! -d "$PYTHON_LIB" ]; then
-            echo "错误：Python头文件/库目录不存在"
-            exit 1
-          fi
-          
+
+          # 配置环境变量
           echo "PYTHON_BIN=$PYTHON_BIN" >> $GITHUB_ENV
-          echo "PYTHON_INCLUDE=$PYTHON_INCLUDE" >> $GITHUB_ENV
-          echo "PYTHON_LIB=$PYTHON_LIB" >> $GITHUB_ENV
+          echo "PYTHON_INCLUDE=$(realpath "$(dirname "$PYTHON_BIN")/../include/python3.11")" >> $GITHUB_ENV
+          echo "PYTHON_LIB=$(realpath "$(dirname "$PYTHON_BIN")/../lib/python3.11")" >> $GITHUB_ENV
           echo "✅ Python 3.11配置完成"
 
-      - name: 编译静态libaio
+      # 步骤6：编译静态libaio
+      - name: 6. 编译静态libaio
         run: |
           wget https://pagure.io/libaio/archive/libaio-0.3.113/libaio-libaio-0.3.113.tar.gz
           tar -xzf libaio-libaio-0.3.113.tar.gz && cd libaio-libaio-0.3.113
-          
+
+          # 修改Makefile适配musl
           sed -i.bak "s|^CC\s*=.*$|CC = musl-gcc|" src/Makefile
           sed -i "s|^CFLAGS\s*=.*$|CFLAGS = -fPIC -static -I/usr/include -D_GNU_SOURCE -Wall|" src/Makefile
           sed -i "s|^LDFLAGS\s*=.*$|LDFLAGS = -static|" src/Makefile
-          
+
+          # 修复编译错误
           find src/ -name "*.c" -exec sed -i -e '/#include <bits\/wordsize.h>/d' -e '1i #define __WORDSIZE 64' {} \;
-          
+
+          # 安装libaio
           sudo cp src/libaio.h /usr/include/
           make V=1
           LIB_AIO_SO=$(find src/ -name "libaio.so.*" | sort -V | tail -n 1)
           sudo cp "$LIB_AIO_SO" /usr/lib/x86_64-linux-gnu/
           sudo ln -sf "$(basename "$LIB_AIO_SO")" /usr/lib/x86_64-linux-gnu/libaio.so.1
-          
+
           echo "LIB_AIO_PATH=/usr/lib/x86_64-linux-gnu/libaio.so.1" >> $GITHUB_ENV
           echo "✅ libaio编译完成"
           cd ..
 
-      - name: 编译安装dmPython
+      # 步骤7：编译安装dmPython
+      - name: 7. 编译安装dmPython
         run: |
           # 读取环境变量
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
@@ -194,42 +187,32 @@ jobs:
           DM_LIB_PATH="${{ env.DM_LIB_PATH }}"
           DM_INCLUDE_PATH="${{ env.DM_INCLUDE_PATH }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
-          
-          # 验证依赖
-          for path in "$PYTHON_BIN" "$DM_INCLUDE_PATH" "$DM_LIB_PATH" "$LIB_AIO_PATH"; do
-            if [ ! -e "$path" ]; then
-              echo "错误：依赖路径[$path]无效"
-              exit 1
-            fi
-          done
-          
+
           # 升级pip
           "$PYTHON_BIN" -m pip install pip==25.2 -i https://pypi.org/simple/
-          
-          # 下载并编译dmPython
-          DM_PYTHON_SRC_URL="https://raw.githubusercontent.com/2758003362/dabao/master/dmPython.tar.gz"
-          wget "$DM_PYTHON_SRC_URL" -O "dmPython.tar.gz"
+
+          # 下载+编译dmPython
+          wget https://raw.githubusercontent.com/2758003362/dabao/master/dmPython.tar.gz -O dmPython.tar.gz
           mkdir -p dmPython-src && tar -xzf dmPython.tar.gz -C dmPython-src --strip-components=1
           cd dmPython-src
-          
-          echo "编译dmPython..."
+
           CC="musl-gcc" \
           CFLAGS="-I$PYTHON_INCLUDE -I$DM_INCLUDE_PATH -fPIC -DDM_USE_AIO=1" \
           LDFLAGS="-L$PYTHON_LIB -L$DM_LIB_PATH -L/usr/lib/x86_64-linux-gnu -ldmdpi -laio -static" \
           "$PYTHON_BIN" setup.py install --dm-home="$DM_HOME"
-          
+
           cd ..
-          
+
           # 验证安装
           if ! "$PYTHON_BIN" -c "import dmPython" &> /dev/null; then
-            echo "错误：dmPython安装失败，详细错误："
+            echo "错误：dmPython安装失败"
             "$PYTHON_BIN" -c "import dmPython" 2>&1
             exit 1
           fi
-          DM_VERSION=$("$PYTHON_BIN" -c 'import dmPython; print(f"dmPython版本：{dmPython.__version__}")')
-          echo "✅ $DM_VERSION 安装完成"
+          echo "✅ dmPython安装完成"
 
-      - name: 安装其他依赖
+      # 步骤8：安装业务依赖
+      - name: 8. 安装业务依赖
         run: |
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           "$PYTHON_BIN" -m pip install \
@@ -239,28 +222,31 @@ jobs:
             pyinstaller==6.16.0 \
             --no-cache-dir \
             -i https://pypi.org/simple/
-          
+
+          # 验证依赖
           for lib in dmPython pandas flask werkzeug; do
             if ! "$PYTHON_BIN" -c "import $lib" &> /dev/null; then
               echo "错误：[$lib]导入失败"
               exit 1
             fi
           done
-          echo "✅ 所有依赖安装完成"
+          echo "✅ 业务依赖安装完成"
 
-      - name: 静态打包应用
+      # 步骤9：静态打包应用
+      - name: 9. 静态打包应用
         run: |
           if [ ! -f "./main.py" ]; then
             echo "错误：未找到main.py"
             exit 1
           fi
-          
+
           PYTHON_BIN="${{ env.PYTHON_BIN }}"
           DM_LIB_PATH="${{ env.DM_LIB_PATH }}"
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
-          
+
+          # 打包命令
           "$PYTHON_BIN" -m PyInstaller --onefile --name myapp-linux \
-            --paths="$PYTHON_BIN/../lib/python3.11/site-packages" \
+            --paths="$PYTHON_LIB/site-packages" \
             --paths="$DM_LIB_PATH" \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
@@ -269,38 +255,37 @@ jobs:
             --add-binary="$LIB_AIO_PATH:." \
             --noupx \
             ./main.py
-          
+
           if [ ! -f "dist/myapp-linux" ]; then
             echo "错误：打包失败"
             exit 1
           fi
-          
-          echo "产物信息："
-          file dist/myapp-linux
-          echo "✅ 打包完成"
+          echo "✅ 应用打包完成"
 
-      - name: 保存产物
+      # 步骤10：保存产物
+      - name: 10. 保存打包产物
         uses: actions/upload-artifact@v4
         with:
           name: myapp-musl-static
           path: dist/myapp-linux
           retention-days: 7
 
+  # 步骤11：自动创建Release（仅标签推送时触发）
   release:
     needs: build-linux
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: 下载产物
+      - name: 1. 下载产物
         uses: actions/download-artifact@v4
         with:
           name: myapp-musl-static
 
-      - name: 创建Release
+      - name: 2. 创建GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: myapp-linux
           generate_release_notes: true
-          name: "v${{ github.ref_name }}（静态版）"
+          name: "v${{ github.ref_name }}（musl静态版）"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
