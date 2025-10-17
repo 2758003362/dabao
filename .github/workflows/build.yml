@@ -8,14 +8,13 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-22.04  # 资源充足，减少排队
+    runs-on: ubuntu-22.04
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置静态Python环境（兼容GLIBC 2.31，修复404）
+      - name: 配置静态Python环境（兼容GLIBC 2.31）
         run: |
-          # 替换为20240224版（仍可访问，兼容低GLIBC）
           wget https://github.com/astral-sh/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
           
           if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
@@ -32,31 +31,47 @@ jobs:
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
 
-      - name: 安装libaio1并获取低版本libstdc++（关键兼容步骤）
+      - name: 安装libaio1并获取低版本libstdc++（修复安装失败）
         run: |
-          # 1. 安装libaio1
+          # 1. 安装libaio1（增加备用源+包完整性验证）
           LIB_AIO_URLS=(
             "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            # 新增2个高可靠性源
+            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
+            "https://mirror.sjtu.edu.cn/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
           )
           
           for url in "${LIB_AIO_URLS[@]}"; do
             echo "尝试从 $url 下载libaio1..."
-            if wget -q "$url" -O libaio1.deb; then
-              echo "✅ 下载成功"
-              break
+            # 强制覆盖旧文件，增加超时时间（10秒）
+            if wget -q --timeout=10 --no-clobber "$url" -O libaio1.deb; then
+              # 验证是否为有效的deb包
+              if dpkg-deb -I libaio1.deb &> /dev/null; then
+                echo "✅ 下载并验证成功"
+                break
+              else
+                echo "⚠️ 下载的文件不是有效deb包，尝试下一个源..."
+                rm -f libaio1.deb  # 删除无效文件
+              fi
             fi
           done
           
           if [ ! -f "libaio1.deb" ]; then
-            echo "错误：所有源均下载失败"
+            echo "错误：所有源均下载失败或文件无效"
             exit 1
           fi
           
-          sudo dpkg -i --force-depends libaio1.deb
+          # 安装时增加错误详情输出
+          sudo dpkg -i --force-depends libaio1.deb || {
+            echo "错误：libaio1安装失败，详细日志："
+            cat /var/log/dpkg.log | tail -n 20
+            exit 1
+          }
+          
           if ! dpkg -s libaio1 &> /dev/null; then
-            echo "错误：libaio1安装失败"
+            echo "错误：libaio1安装后验证失败"
             exit 1
           fi
           
@@ -84,7 +99,7 @@ jobs:
           echo "LOW_GLIBC_LIBSTDCPP_PATH=$LOW_GLIBC_LIBSTDCPP_PATH" >> $GITHUB_ENV
           echo "✅ 低版本libstdc++准备完成"
 
-      - name: 安装Python依赖（低版本兼容）
+      - name: 安装Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
           ./python/bin/python -m pip install dmPython==2.5.20 pandas==1.5.3 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
@@ -96,7 +111,7 @@ jobs:
             exit 1
           fi
 
-      - name: 打包应用（强制使用低版本libstdc++）
+      - name: 打包应用
         run: |
           if [ ! -f "./main.py" ]; then
             echo "错误：未找到入口脚本main.py"
@@ -105,9 +120,6 @@ jobs:
           
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
-          
-          echo "使用libaio路径：$LIB_AIO_PATH"
-          echo "使用低版本libstdc++路径：$LOW_GLIBC_LIBSTDCPP_PATH"
           
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
@@ -126,7 +138,6 @@ jobs:
             exit 1
           fi
           
-          # 验证无高版本GLIBC依赖
           echo "检查GLIBC依赖："
           objdump -T dist/myapp-linux | grep -E "GLIBC_2.33|GLIBC_2.34|GLIBC_2.35|GLIBC_2.38" || echo "✅ 未发现高版本依赖"
 
