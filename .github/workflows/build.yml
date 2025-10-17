@@ -68,7 +68,7 @@ jobs:
                 echo "✅ 下载成功: $(basename $url)"
                 break
               else
-                echo "下载的文件损坏，尝试下一个源..."
+                echo "下载的文件损坏，尝试 "下载的文件损坏，尝试下一个源..."
                 rm -f libstdc++6.deb
               fi
             else
@@ -110,7 +110,8 @@ jobs:
       - name: 安装Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          ./python/bin/python -m pip install dmPython==2.5.20 pandas==1.5.3 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
+          # 已将dmPython版本从2.5.20改为可用的2.5.22
+          ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
           
           if ./python/bin/python -c "import dmPython" &> /dev/null; then
             echo "✅ dmPython安装成功"
