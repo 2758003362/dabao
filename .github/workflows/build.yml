@@ -8,24 +8,23 @@ on:
 
 jobs:
   build-linux:
-    # 使用资源更充足的ubuntu-22.04，减少排队
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22.04  # 资源充足，减少排队
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置静态Python环境（兼容GLIBC 2.31）
+      - name: 配置静态Python环境（兼容GLIBC 2.31，修复404）
         run: |
-          # 低GLIBC依赖的Python包（20230621版，适配x86_64）
-          wget https://github.com/astral-sh/python-build-standalone/releases/download/20230621/cpython-3.11.4+20230621-x86_64-unknown-linux-gnu-install_only.tar.gz
+          # 替换为20240224版（仍可访问，兼容低GLIBC）
+          wget https://github.com/astral-sh/python-build-standalone/releases/download/20240224/cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          if [ ! -f "cpython-3.11.4+20230621-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
+          if [ ! -f "cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
           mkdir -p python
-          tar -xzf cpython-3.11.4+20230621-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
+          tar -xzf cpython-3.11.8+20240224-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
           if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败"
@@ -64,7 +63,7 @@ jobs:
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
           
-          # 2. 手动下载Ubuntu 20.04的低版本libstdc++.so.6（依赖GLIBC 2.31）
+          # 2. 下载Ubuntu 20.04的低版本libstdc++.so.6
           echo "下载Ubuntu 20.04的低版本libstdc++..."
           wget http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.4.0-1ubuntu1~20.04.2_amd64.deb -O libstdc++6.deb
           
@@ -73,7 +72,6 @@ jobs:
             exit 1
           fi
           
-          # 解压并提取libstdc++.so.6
           mkdir -p libstdc++
           dpkg-deb -x libstdc++6.deb libstdc++
           LOW_GLIBC_LIBSTDCPP_PATH=$(find ./libstdc++ -name "libstdc++.so.6" | head -n 1)
@@ -84,12 +82,11 @@ jobs:
           fi
           
           echo "LOW_GLIBC_LIBSTDCPP_PATH=$LOW_GLIBC_LIBSTDCPP_PATH" >> $GITHUB_ENV
-          echo "✅ 低版本libstdc++准备完成，路径：$LOW_GLIBC_LIBSTDCPP_PATH"
+          echo "✅ 低版本libstdc++准备完成"
 
       - name: 安装Python依赖（低版本兼容）
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 兼容GLIBC 2.31的依赖版本
           ./python/bin/python -m pip install dmPython==2.5.20 pandas==1.5.3 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
           
           if ./python/bin/python -c "import dmPython" &> /dev/null; then
@@ -112,7 +109,6 @@ jobs:
           echo "使用libaio路径：$LIB_AIO_PATH"
           echo "使用低版本libstdc++路径：$LOW_GLIBC_LIBSTDCPP_PATH"
           
-          # 打包时强制携带低版本libstdc++
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
