@@ -57,23 +57,30 @@ jobs:
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
           echo "✅ libaio1安装成功"
 
-      - name: 获取低版本libstdc++（Ubuntu 20.04，修复404）
+      - name: 获取低版本libstdc++（Ubuntu 20.04，使用可用版本）
         run: |
-          echo "下载Ubuntu 20.04的低版本libstdc++..."
-          # 多个备用源（优先使用旧版本仓库和镜像）
+          echo "下载Ubuntu 20.04的低版本libstdc++（替换为可用版本）..."
+          # 替换为仍存在的9.3.0版本（兼容GLIBC 2.31）
           LIBSTDCPP_URLS=(
-            "http://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.4.0-1ubuntu1~20.04.2_amd64.deb"
-            "https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.4.0-1ubuntu1~20.04.2_amd64.deb"
-            "http://mirrors.163.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.4.0-1ubuntu1~20.04.2_amd64.deb"
-            "https://mirror.sjtu.edu.cn/ubuntu/pool/main/g/gcc-9/libstdc++6_9.4.0-1ubuntu1~20.04.2_amd64.deb"
+            "http://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-17ubuntu1~20.04_amd64.deb"
+            "https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-17ubuntu1~20.04_amd64.deb"
+            "http://mirrors.163.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-17ubuntu1~20.04_amd64.deb"
+            "https://mirror.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-17ubuntu1~20.04_amd64.deb"
+            "https://mirrors.ustc.edu.cn/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-17ubuntu1~20.04_amd64.deb"
           )
           
           # 循环尝试所有源，增加超时和重试
           for url in "${LIBSTDCPP_URLS[@]}"; do
             echo "尝试从 $url 下载..."
-            if wget --timeout=10 --tries=2 "$url" -O libstdc++6.deb; then
-              echo "✅ 下载成功"
-              break
+            if wget --timeout=10 --tries=3 "$url" -O libstdc++6.deb; then
+              # 验证是否为有效deb包
+              if dpkg-deb -I libstdc++6.deb &> /dev/null; then
+                echo "✅ 下载并验证成功"
+                break
+              else
+                echo "⚠️ 无效的deb包，尝试下一个源..."
+                rm -f libstdc++6.deb
+              fi
             fi
           done
           
