@@ -31,22 +31,26 @@ jobs:
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
 
-      - name: 安装libaio1并获取低版本libstdc++（系统包管理器方案）
+      - name: 安装libaio1（系统包管理器强制安装）
         run: |
-          # 1. 关键修改：使用系统包管理器安装libaio1（自动处理依赖和完整性）
-          echo "使用apt安装libaio1..."
-          # 先更新源列表（解决可能的源失效问题）
-          sudo apt-get update -qq
-          # 强制安装libaio1（忽略可能的依赖冲突）
-          if ! sudo apt-get install -y --force-yes libaio1; then
-            echo "错误：apt安装失败，尝试手动安装备用包..."
-            # 备用方案：从官方仓库下载特定版本
-            wget http://security.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb -O libaio1.deb
-            if [ ! -f "libaio1.deb" ] || ! dpkg-deb -I libaio1.deb &> /dev/null; then
-              echo "错误：所有安装方式均失败"
-              exit 1
-            fi
-            sudo dpkg -i --force-depends libaio1.deb
+          # 关键：彻底放弃手动下载，改用系统源+多镜像重试
+          echo "配置多镜像源提高成功率..."
+          # 临时添加多个可靠源（解决默认源可能失效的问题）
+          echo "deb http://archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb http://security.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb http://mirrors.aliyun.com/ubuntu/ jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          
+          # 强制更新源并忽略错误
+          echo "更新源列表..."
+          sudo apt-get update -qq || echo "⚠️ 部分源更新失败，继续尝试安装"
+          
+          # 强制安装libaio1（忽略所有依赖问题）
+          echo "强制安装libaio1..."
+          if ! sudo apt-get install -y --force-yes --allow-unauthenticated libaio1; then
+            echo "错误：系统包管理器安装libaio1失败"
+            # 输出apt日志帮助排查
+            cat /var/log/apt/history.log | tail -n 30
+            exit 1
           fi
           
           # 验证安装结果
@@ -55,14 +59,16 @@ jobs:
             exit 1
           fi
           
+          # 获取库路径
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          
-          # 2. 下载Ubuntu 20.04的低版本libstdc++.so.6
+          echo "✅ libaio1安装成功"
+
+      - name: 获取低版本libstdc++（Ubuntu 20.04）
+        run: |
           echo "下载Ubuntu 20.04的低版本libstdc++..."
-          wget http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.4.0-1ubuntu1~20.04.2_amd64.deb -O libstdc++6.deb
-          
-          if [ ! -f "libstdc++6.deb" ]; then
+          # 增加超时和重试机制
+          if ! wget --timeout=10 --tries=3 http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.4.0-1ubuntu1~20.04.2_amd64.deb -O libstdc++6.deb; then
             echo "错误：低版本libstdc++下载失败"
             exit 1
           fi
