@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-linux:
-    # 改动1：构建环境从 ubuntu-latest 改为 ubuntu-22.04（GLIBC 2.35）
+    # 改动1：使用Ubuntu 22.04（GLIBC 2.35）避免高版本依赖
     runs-on: ubuntu-22.04
     steps:
       - name: 检出仓库代码
@@ -16,25 +16,28 @@ jobs:
 
       - name: 配置静态Python环境
         run: |
-          # 改动2：Python包从 20240224 版换成 20231014 版（低GLIBC依赖）
-          wget https://github.com/indygreg/python-build-standalone/releases/download/20231014/cpython-3.11.6+20231014-x86_64-unknown-linux-gnu-install_only.tar.gz
+          # 改动2：替换为astral-sh仓库有效链接（20240520版，兼容GLIBC 2.31+）
+          wget https://github.com/astral-sh/python-build-standalone/releases/download/20240520/cpython-3.11.9+20240520-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          if [ ! -f "cpython-3.11.6+20231014-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
+          # 验证下载文件存在性（文件名与URL保持一致）
+          if [ ! -f "cpython-3.11.9+20240520-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
           mkdir -p python
-          tar -xzf cpython-3.11.6+20231014-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
+          # 解压文件名同步更新
+          tar -xzf cpython-3.11.9+20240520-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
           if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败"
             exit 1
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
+
       - name: 安装libaio1（写入环境变量，跨步骤共享）
-        # 【未改动】保留原逻辑
         run: |
+          # 多源下载libaio1.deb（保留原逻辑）
           LIB_AIO_URLS=(
             "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
@@ -55,12 +58,14 @@ jobs:
             exit 1
           fi
           
+          # 强制安装（适配Ubuntu 24.04）
           sudo dpkg -i --force-depends libaio1.deb
           if ! dpkg -s libaio1 &> /dev/null; then
             echo "错误：libaio1安装失败"
             exit 1
           fi
           
+          # 获取并验证libaio.so.1路径
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
           echo "获取到的libaio路径：[$LIB_AIO_PATH]"
           
@@ -70,14 +75,17 @@ jobs:
             exit 1
           fi
           
+          # 写入环境变量
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
           echo "✅ libaio1安装成功，路径已写入环境变量"
+
       - name: 安装Python依赖
-        # 【未改动】保留原版本（dmPython==2.5.22等）
         run: |
+          # 保留原依赖版本（避免额外兼容性问题）
           ./python/bin/python -m pip install --upgrade pip
           ./python/bin/python -m pip install dmPython==2.5.22 pandas==2.1.4 flask==2.3.3 werkzeug==2.3.7 pyinstaller==6.16.0
           
+          # 验证dmPython可用性
           if ./python/bin/python -c "import dmPython" &> /dev/null; then
             echo "✅ dmPython安装成功"
           else
@@ -85,8 +93,10 @@ jobs:
             exit 1
           fi
           echo "✅ 所有依赖安装完成"
+
       - name: 打包应用（最终稳定版）
         run: |
+          # 验证入口脚本
           echo "当前目录文件列表："
           ls -la
           if [ ! -f "./main.py" ]; then
@@ -95,6 +105,7 @@ jobs:
           fi
           echo "✅ 确认main.py存在"
           
+          # 获取libaio路径（带fallback）
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           echo "从环境变量获取的libaio路径：[$LIB_AIO_PATH]"
           
@@ -108,7 +119,7 @@ jobs:
             echo "fallback成功，路径：$LIB_AIO_PATH"
           fi
           
-          # 改动3：添加 --add-binary 携带 Ubuntu 22.04 的 libstdc++.so.6（低GLIBC依赖）
+          # 改动3：携带Ubuntu 22.04的libstdc++.so.6（解决GLIBC_2.38依赖）
           echo "开始打包，使用libaio路径：$LIB_AIO_PATH"
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
@@ -122,17 +133,18 @@ jobs:
             --add-binary="/usr/lib/x86_64-linux-gnu/libstdc++.so.6:." \  # 新增：携带低版本libstdc++
             ./main.py
           
+          # 验证打包产物
           if [ ! -f "dist/myapp-linux" ]; then
             echo "错误：打包失败，未生成产物"
             exit 1
           fi
-          # 新增：验证产物是否依赖 GLIBC_2.38（确保无该依赖）
           echo "✅ 打包完成，产物信息："
           ls -lh dist/myapp-linux
-          echo "检查产物依赖的GLIBC版本（无2.38则正常）："
+          # 验证GLIBC依赖（确保无2.38）
+          echo "检查产物依赖的GLIBC版本："
           objdump -T dist/myapp-linux | grep GLIBC_2.38 || echo "✅ 未发现 GLIBC_2.38 依赖"
+
       - name: 保存打包产物
-        # 【未改动】保留原逻辑
         uses: actions/upload-artifact@v4
         with:
           name: myapp-static
@@ -140,7 +152,6 @@ jobs:
           retention-days: 7
 
   release:
-    # 【未改动】保留原逻辑
     needs: build-linux
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
