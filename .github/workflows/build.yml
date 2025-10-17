@@ -1,25 +1,24 @@
-name: 达梦API服务打包（兼容GLIBC 2.31 + Ubuntu 24.04）
+name: 达梦API服务打包（兼容GLIBC 2.31 + 避免排队）
 
 on:
   push:
     tags:
-      - 'v*.*.*'  # 标签推送触发构建
-  workflow_dispatch:  # 手动触发
+      - 'v*.*.*'
+  workflow_dispatch:
 
 jobs:
   build-linux:
-    # 关键：使用Ubuntu 20.04（自带GLIBC 2.31，与目标版本完全匹配）
-    runs-on: ubuntu-20.04
+    # 使用资源更充足的ubuntu-22.04，减少排队
+    runs-on: ubuntu-22.04
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置静态Python环境（适配GLIBC 2.31）
+      - name: 配置静态Python环境（兼容GLIBC 2.31）
         run: |
-          # 使用兼容GLIBC 2.31的Python包（20230621版，x86_64架构）
+          # 低GLIBC依赖的Python包（20230621版，适配x86_64）
           wget https://github.com/astral-sh/python-build-standalone/releases/download/20230621/cpython-3.11.4+20230621-x86_64-unknown-linux-gnu-install_only.tar.gz
           
-          # 验证下载文件存在性
           if [ ! -f "cpython-3.11.4+20230621-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
             echo "错误：Python压缩包下载失败"
             exit 1
@@ -34,8 +33,9 @@ jobs:
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
 
-      - name: 安装libaio1（写入环境变量，跨步骤共享）
+      - name: 安装libaio1并获取低版本libstdc++（关键兼容步骤）
         run: |
+          # 1. 安装libaio1
           LIB_AIO_URLS=(
             "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
@@ -62,56 +62,57 @@ jobs:
           fi
           
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
-          echo "获取到的libaio路径：[$LIB_AIO_PATH]"
+          echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
           
-          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "错误：获取的libaio路径无效（文件不存在）"
-            ls -la /lib/x86_64-linux-gnu/ | grep libaio
+          # 2. 手动下载Ubuntu 20.04的低版本libstdc++.so.6（依赖GLIBC 2.31）
+          echo "下载Ubuntu 20.04的低版本libstdc++..."
+          wget http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.4.0-1ubuntu1~20.04.2_amd64.deb -O libstdc++6.deb
+          
+          if [ ! -f "libstdc++6.deb" ]; then
+            echo "错误：低版本libstdc++下载失败"
             exit 1
           fi
           
-          echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          echo "✅ libaio1安装成功，路径已写入环境变量"
+          # 解压并提取libstdc++.so.6
+          mkdir -p libstdc++
+          dpkg-deb -x libstdc++6.deb libstdc++
+          LOW_GLIBC_LIBSTDCPP_PATH=$(find ./libstdc++ -name "libstdc++.so.6" | head -n 1)
+          
+          if [ -z "$LOW_GLIBC_LIBSTDCPP_PATH" ] || [ ! -f "$LOW_GLIBC_LIBSTDCPP_PATH" ]; then
+            echo "错误：未找到低版本libstdc++.so.6"
+            exit 1
+          fi
+          
+          echo "LOW_GLIBC_LIBSTDCPP_PATH=$LOW_GLIBC_LIBSTDCPP_PATH" >> $GITHUB_ENV
+          echo "✅ 低版本libstdc++准备完成，路径：$LOW_GLIBC_LIBSTDCPP_PATH"
 
-      - name: 安装Python依赖
+      - name: 安装Python依赖（低版本兼容）
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 使用兼容旧GLIBC的依赖版本
+          # 兼容GLIBC 2.31的依赖版本
           ./python/bin/python -m pip install dmPython==2.5.20 pandas==1.5.3 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
           
           if ./python/bin/python -c "import dmPython" &> /dev/null; then
             echo "✅ dmPython安装成功"
           else
-            echo "错误：dmPython安装失败（可能是libaio依赖问题）"
+            echo "错误：dmPython安装失败"
             exit 1
           fi
-          echo "✅ 所有依赖安装完成"
 
-      - name: 打包应用（兼容GLIBC 2.31）
+      - name: 打包应用（强制使用低版本libstdc++）
         run: |
-          echo "当前目录文件列表："
-          ls -la
           if [ ! -f "./main.py" ]; then
             echo "错误：未找到入口脚本main.py"
             exit 1
           fi
-          echo "✅ 确认main.py存在"
           
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
-          echo "从环境变量获取的libaio路径：[$LIB_AIO_PATH]"
+          LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
           
-          if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-            echo "警告：环境变量路径无效，尝试重新获取..."
-            LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
-            if [ -z "$LIB_AIO_PATH" ] || [ ! -f "$LIB_AIO_PATH" ]; then
-              echo "错误：重新获取路径仍无效"
-              exit 1
-            fi
-            echo "fallback成功，路径：$LIB_AIO_PATH"
-          fi
+          echo "使用libaio路径：$LIB_AIO_PATH"
+          echo "使用低版本libstdc++路径：$LOW_GLIBC_LIBSTDCPP_PATH"
           
-          # 携带Ubuntu 20.04的libstdc++.so.6（依赖GLIBC 2.31）
-          echo "开始打包，使用libaio路径：$LIB_AIO_PATH"
+          # 打包时强制携带低版本libstdc++
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -121,20 +122,19 @@ jobs:
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
             --add-binary="$LIB_AIO_PATH:." \
-            --add-binary="/usr/lib/x86_64-linux-gnu/libstdc++.so.6:." \
+            --add-binary="$LOW_GLIBC_LIBSTDCPP_PATH:." \
             ./main.py
           
           if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：打包失败，未生成产物"
+            echo "错误：打包失败"
             exit 1
           fi
-          echo "✅ 打包完成，产物信息："
-          ls -lh dist/myapp-linux
-          # 验证是否依赖GLIBC_2.33及以上版本
-          echo "检查产物依赖的高版本GLIBC："
-          objdump -T dist/myapp-linux | grep -E "GLIBC_2.33|GLIBC_2.34|GLIBC_2.35|GLIBC_2.38" || echo "✅ 未发现高版本GLIBC依赖"
+          
+          # 验证无高版本GLIBC依赖
+          echo "检查GLIBC依赖："
+          objdump -T dist/myapp-linux | grep -E "GLIBC_2.33|GLIBC_2.34|GLIBC_2.35|GLIBC_2.38" || echo "✅ 未发现高版本依赖"
 
-      - name: 保存打包产物
+      - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
           name: myapp-static
@@ -151,7 +151,7 @@ jobs:
         with:
           name: myapp-static
 
-      - name: 创建GitHub Release
+      - name: 创建Release
         uses: softprops/action-gh-release@v2
         with:
           files: myapp-linux
