@@ -57,35 +57,36 @@ jobs:
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
           echo "✅ libaio1安装成功"
 
-      - name: 获取低版本libstdc++（Ubuntu 20.04 初始版本，确保可用）
+      - name: 获取低版本libstdc++（Ubuntu 20.04 原始版本，确保可用）
         run: |
-          echo "下载Ubuntu 20.04初始版本libstdc++（长期保留版本）..."
-          # 使用Ubuntu 20.04发布时的初始版本（9.3.0-10ubuntu2），该版本在旧仓库长期保留
+          echo "下载Ubuntu 20.04原始版本libstdc++（9.3.0-10ubuntu2，长期归档版本）..."
+          # 该版本是Ubuntu 20.04初始发布版本，在old-releases中永久保留
           LIBSTDCPP_URLS=(
             "http://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"
-            "https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"
-            "http://mirrors.163.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"
-            "https://mirror.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"
-            "https://mirrors.nju.edu.cn/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"  # 南京大学镜像
+            "https://mirrors.nju.edu.cn/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"  # 南京大学镜像（旧包归档完整）
+            "https://mirror.bit.edu.cn/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"   # 北京理工大学镜像
+            "https://mirrors.hit.edu.cn/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"   # 哈尔滨工业大学镜像
           )
           
-          # 循环尝试所有源，增加超时和重试
+          # 循环尝试所有源，增加超时和重试次数
           for url in "${LIBSTDCPP_URLS[@]}"; do
             echo "尝试从 $url 下载..."
-            if wget --timeout=15 --tries=3 "$url" -O libstdc++6.deb; then
-              # 验证是否为有效deb包
+            if wget --timeout=20 --tries=5 "$url" -O libstdc++6.deb; then
+              # 严格验证deb包完整性
               if dpkg-deb -I libstdc++6.deb &> /dev/null; then
                 echo "✅ 下载并验证成功"
                 break
               else
-                echo "⚠️ 无效的deb包，尝试下一个源..."
+                echo "⚠️ 无效的deb包，删除后重试..."
                 rm -f libstdc++6.deb
               fi
             fi
           done
           
+          # 最终检查，若仍失败则提示手动干预
           if [ ! -f "libstdc++6.deb" ]; then
-            echo "错误：所有源均下载失败"
+            echo "错误：所有源均下载失败，请手动下载以下包并放入项目根目录："
+            echo "http://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"
             exit 1
           fi
           
