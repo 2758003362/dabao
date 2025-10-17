@@ -31,45 +31,25 @@ jobs:
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
 
-      - name: 安装libaio1并获取低版本libstdc++（修复安装失败）
+      - name: 安装libaio1并获取低版本libstdc++（系统包管理器方案）
         run: |
-          # 1. 安装libaio1（增加备用源+包完整性验证）
-          LIB_AIO_URLS=(
-            "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            # 新增2个高可靠性源
-            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "https://mirror.sjtu.edu.cn/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-          )
-          
-          for url in "${LIB_AIO_URLS[@]}"; do
-            echo "尝试从 $url 下载libaio1..."
-            # 强制覆盖旧文件，增加超时时间（10秒）
-            if wget -q --timeout=10 --no-clobber "$url" -O libaio1.deb; then
-              # 验证是否为有效的deb包
-              if dpkg-deb -I libaio1.deb &> /dev/null; then
-                echo "✅ 下载并验证成功"
-                break
-              else
-                echo "⚠️ 下载的文件不是有效deb包，尝试下一个源..."
-                rm -f libaio1.deb  # 删除无效文件
-              fi
+          # 1. 关键修改：使用系统包管理器安装libaio1（自动处理依赖和完整性）
+          echo "使用apt安装libaio1..."
+          # 先更新源列表（解决可能的源失效问题）
+          sudo apt-get update -qq
+          # 强制安装libaio1（忽略可能的依赖冲突）
+          if ! sudo apt-get install -y --force-yes libaio1; then
+            echo "错误：apt安装失败，尝试手动安装备用包..."
+            # 备用方案：从官方仓库下载特定版本
+            wget http://security.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb -O libaio1.deb
+            if [ ! -f "libaio1.deb" ] || ! dpkg-deb -I libaio1.deb &> /dev/null; then
+              echo "错误：所有安装方式均失败"
+              exit 1
             fi
-          done
-          
-          if [ ! -f "libaio1.deb" ]; then
-            echo "错误：所有源均下载失败或文件无效"
-            exit 1
+            sudo dpkg -i --force-depends libaio1.deb
           fi
           
-          # 安装时增加错误详情输出
-          sudo dpkg -i --force-depends libaio1.deb || {
-            echo "错误：libaio1安装失败，详细日志："
-            cat /var/log/dpkg.log | tail -n 20
-            exit 1
-          }
-          
+          # 验证安装结果
           if ! dpkg -s libaio1 &> /dev/null; then
             echo "错误：libaio1安装后验证失败"
             exit 1
