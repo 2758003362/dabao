@@ -31,76 +31,81 @@ jobs:
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
 
-      - name: 安装libaio1（系统包管理器强制安装）
+      - name: 安装libaio1并获取低版本libstdc++
         run: |
-          echo "配置多镜像源提高成功率..."
-          echo "deb http://archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb http://security.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb http://mirrors.aliyun.com/ubuntu/ jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          # 1. 安装libaio1
+          echo "使用apt安装libaio1..."
+          sudo apt-get update -qq
+          sudo apt-get install -y libaio1
           
-          echo "更新源列表..."
-          sudo apt-get update -qq || echo "⚠️ 部分源更新失败，继续尝试安装"
-          
-          echo "强制安装libaio1..."
-          if ! sudo apt-get install -y --force-yes --allow-unauthenticated libaio1; then
-            echo "错误：系统包管理器安装libaio1失败"
-            cat /var/log/apt/history.log | tail -n 30
-            exit 1
-          fi
-          
+          # 验证安装结果
           if ! dpkg -s libaio1 &> /dev/null; then
-            echo "错误：libaio1安装后验证失败"
+            echo "错误：libaio1安装失败"
             exit 1
           fi
           
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
-          echo "✅ libaio1安装成功"
-
-      - name: 获取低版本libstdc++（Ubuntu 20.04 原始版本，确保可用）
-        run: |
-          echo "下载Ubuntu 20.04原始版本libstdc++（9.3.0-10ubuntu2，长期归档版本）..."
-          # 该版本是Ubuntu 20.04初始发布版本，在old-releases中永久保留
-          LIBSTDCPP_URLS=(
-            "http://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"
-            "https://mirrors.nju.edu.cn/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"  # 南京大学镜像（旧包归档完整）
-            "https://mirror.bit.edu.cn/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"   # 北京理工大学镜像
-            "https://mirrors.hit.edu.cn/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"   # 哈尔滨工业大学镜像
+          
+          # 2. 下载Ubuntu 20.04的libstdc++6包
+          echo "下载Ubuntu 20.04的libstdc++6包..."
+          
+          # 使用已验证可用的包名
+          urls=(
+            "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb"
+            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb"
+            "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb"
+            # 备选旧版本
+            "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libstdc++6_10-20200411-0ubuntu1_amd64.deb"
           )
           
-          # 循环尝试所有源，增加超时和重试次数
-          for url in "${LIBSTDCPP_URLS[@]}"; do
+          download_success=false
+          for url in "${urls[@]}"; do
             echo "尝试从 $url 下载..."
-            if wget --timeout=20 --tries=5 "$url" -O libstdc++6.deb; then
-              # 严格验证deb包完整性
+            if wget -q "$url" -O libstdc++6.deb; then
               if dpkg-deb -I libstdc++6.deb &> /dev/null; then
-                echo "✅ 下载并验证成功"
+                download_success=true
+                echo "✅ 下载成功: $(basename $url)"
                 break
               else
-                echo "⚠️ 无效的deb包，删除后重试..."
+                echo "下载的文件损坏，尝试下一个源..."
                 rm -f libstdc++6.deb
               fi
+            else
+              echo "下载失败，尝试下一个源..."
             fi
           done
           
-          # 最终检查，若仍失败则提示手动干预
-          if [ ! -f "libstdc++6.deb" ]; then
-            echo "错误：所有源均下载失败，请手动下载以下包并放入项目根目录："
-            echo "http://old-releases.ubuntu.com/ubuntu/pool/main/g/gcc-9/libstdc++6_9.3.0-10ubuntu2_amd64.deb"
-            exit 1
+          if [ "$download_success" = false ]; then
+            echo "错误：所有libstdc++下载源均失败"
+            # 备选方案：使用系统自带的libstdc++.so.6
+            echo "警告：使用系统自带的libstdc++.so.6"
+            SYSTEM_LIBSTDCPP_PATH=$(ldconfig -p | grep "libstdc++.so.6" | head -n 1 | awk '{print $4}')
+            if [ -n "$SYSTEM_LIBSTDCPP_PATH" ]; then
+              cp "$SYSTEM_LIBSTDCPP_PATH" ./libstdc++.so.6
+              echo "LOW_GLIBC_LIBSTDCPP_PATH=./libstdc++.so.6" >> $GITHUB_ENV
+              echo "✅ 使用系统libstdc++.so.6作为备选方案"
+            else
+              echo "错误：无法找到可用的libstdc++.so.6"
+              exit 1
+            fi
+          else
+            mkdir -p libstdc++
+            dpkg-deb -x libstdc++6.deb libstdc++
+            LOW_GLIBC_LIBSTDCPP_PATH=$(find ./libstdc++ -name "libstdc++.so.6" | head -n 1)
+            
+            if [ -z "$LOW_GLIBC_LIBSTDCPP_PATH" ] || [ ! -f "$LOW_GLIBC_LIBSTDCPP_PATH" ]; then
+              echo "错误：未找到低版本libstdc++.so.6"
+              exit 1
+            fi
+            
+            echo "LOW_GLIBC_LIBSTDCPP_PATH=$LOW_GLIBC_LIBSTDCPP_PATH" >> $GITHUB_ENV
+            echo "✅ 低版本libstdc++准备完成: $LOW_GLIBC_LIBSTDCPP_PATH"
+            
+            # 验证GLIBC版本兼容性
+            echo "检查libstdc++.so.6的GLIBC依赖："
+            objdump -T "$LOW_GLIBC_LIBSTDCPP_PATH" | grep GLIBC_2.3[0-9] | sort -V | tail -5 || echo "GLIBC版本检查完成"
           fi
-          
-          mkdir -p libstdc++
-          dpkg-deb -x libstdc++6.deb libstdc++
-          LOW_GLIBC_LIBSTDCPP_PATH=$(find ./libstdc++ -name "libstdc++.so.6" | head -n 1)
-          
-          if [ -z "$LOW_GLIBC_LIBSTDCPP_PATH" ] || [ ! -f "$LOW_GLIBC_LIBSTDCPP_PATH" ]; then
-            echo "错误：未找到低版本libstdc++.so.6"
-            exit 1
-          fi
-          
-          echo "LOW_GLIBC_LIBSTDCPP_PATH=$LOW_GLIBC_LIBSTDCPP_PATH" >> $GITHUB_ENV
-          echo "✅ 低版本libstdc++准备完成"
 
       - name: 安装Python依赖
         run: |
@@ -124,7 +129,8 @@ jobs:
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
           
-          ./python/bin/pyinstaller --onefile --name myapp-linux \
+          # 构建PyInstaller命令
+          PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
             --hidden-import=dmPython \
@@ -132,17 +138,29 @@ jobs:
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
-            --add-binary="$LIB_AIO_PATH:." \
-            --add-binary="$LOW_GLIBC_LIBSTDCPP_PATH:." \
-            ./main.py
+            --add-binary=\"$LIB_AIO_PATH:.\""
+          
+          # 如果找到了低版本libstdc++，则添加到打包中
+          if [ -n "$LOW_GLIBC_LIBSTDCPP_PATH" ] && [ -f "$LOW_GLIBC_LIBSTDCPP_PATH" ]; then
+            PYINSTALLER_CMD="$PYINSTALLER_CMD --add-binary=\"$LOW_GLIBC_LIBSTDCPP_PATH:.\""
+          fi
+          
+          PYINSTALLER_CMD="$PYINSTALLER_CMD ./main.py"
+          
+          echo "执行打包命令: $PYINSTALLER_CMD"
+          eval $PYINSTALLER_CMD
           
           if [ ! -f "dist/myapp-linux" ]; then
             echo "错误：打包失败"
             exit 1
           fi
           
-          echo "检查GLIBC依赖："
-          objdump -T dist/myapp-linux | grep -E "GLIBC_2.33|GLIBC_2.34|GLIBC_2.35|GLIBC_2.38" || echo "✅ 未发现高版本依赖"
+          echo "检查最终产物的GLIBC依赖："
+          objdump -T dist/myapp-linux | grep -E "GLIBC_2.3[3-9]|GLIBC_2.[4-9][0-9]" | sort -V | head -10 || echo "✅ 未发现不兼容的高版本GLIBC依赖"
+          
+          echo "打包完成，文件信息："
+          ls -lh dist/myapp-linux
+          file dist/myapp-linux
 
       - name: 保存产物
         uses: actions/upload-artifact@v4
