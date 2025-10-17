@@ -8,26 +8,25 @@ on:
 
 jobs:
   build-linux:
-    # 使用Ubuntu 22.04（GLIBC 2.35）确保兼容性
-    runs-on: ubuntu-22.04
+    # 关键：使用Ubuntu 20.04（自带GLIBC 2.31，与目标版本完全匹配）
+    runs-on: ubuntu-20.04
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置静态Python环境（x86_64架构）
+      - name: 配置静态Python环境（适配GLIBC 2.31）
         run: |
-          # 使用最新x86_64架构Python包（20251014版，兼容低GLIBC）
-          wget https://github.com/astral-sh/python-build-standalone/releases/download/20251014/cpython-3.11.14+20251014-x86_64-unknown-linux-gnu-install_only.tar.gz
+          # 使用兼容GLIBC 2.31的Python包（20230621版，x86_64架构）
+          wget https://github.com/astral-sh/python-build-standalone/releases/download/20230621/cpython-3.11.4+20230621-x86_64-unknown-linux-gnu-install_only.tar.gz
           
           # 验证下载文件存在性
-          if [ ! -f "cpython-3.11.14+20251014-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
+          if [ ! -f "cpython-3.11.4+20230621-x86_64-unknown-linux-gnu-install_only.tar.gz" ]; then
             echo "错误：Python压缩包下载失败"
             exit 1
           fi
           
           mkdir -p python
-          # 解压文件名同步更新
-          tar -xzf cpython-3.11.14+20251014-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
+          tar -xzf cpython-3.11.4+20230621-x86_64-unknown-linux-gnu-install_only.tar.gz -C python --strip-components=1
           
           if [ ! -f "./python/bin/python" ]; then
             echo "错误：Python解压失败"
@@ -41,7 +40,6 @@ jobs:
             "http://archive.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "https://mirrors.aliyun.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
             "http://mirrors.163.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
-            "http://old-releases.ubuntu.com/ubuntu/pool/main/liba/libaio/libaio1_0.3.113-4_amd64.deb"
           )
           
           for url in "${LIB_AIO_URLS[@]}"; do
@@ -78,7 +76,8 @@ jobs:
       - name: 安装Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          ./python/bin/python -m pip install dmPython==2.5.22 pandas==2.1.4 flask==2.3.3 werkzeug==2.3.7 pyinstaller==6.16.0
+          # 使用兼容旧GLIBC的依赖版本
+          ./python/bin/python -m pip install dmPython==2.5.20 pandas==1.5.3 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
           
           if ./python/bin/python -c "import dmPython" &> /dev/null; then
             echo "✅ dmPython安装成功"
@@ -88,7 +87,7 @@ jobs:
           fi
           echo "✅ 所有依赖安装完成"
 
-      - name: 打包应用（最终稳定版）
+      - name: 打包应用（兼容GLIBC 2.31）
         run: |
           echo "当前目录文件列表："
           ls -la
@@ -111,6 +110,7 @@ jobs:
             echo "fallback成功，路径：$LIB_AIO_PATH"
           fi
           
+          # 携带Ubuntu 20.04的libstdc++.so.6（依赖GLIBC 2.31）
           echo "开始打包，使用libaio路径：$LIB_AIO_PATH"
           ./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
@@ -130,8 +130,9 @@ jobs:
           fi
           echo "✅ 打包完成，产物信息："
           ls -lh dist/myapp-linux
-          echo "检查产物依赖的GLIBC版本："
-          objdump -T dist/myapp-linux | grep GLIBC_2.38 || echo "✅ 未发现 GLIBC_2.38 依赖"
+          # 验证是否依赖GLIBC_2.33及以上版本
+          echo "检查产物依赖的高版本GLIBC："
+          objdump -T dist/myapp-linux | grep -E "GLIBC_2.33|GLIBC_2.34|GLIBC_2.35|GLIBC_2.38" || echo "✅ 未发现高版本GLIBC依赖"
 
       - name: 保存打包产物
         uses: actions/upload-artifact@v4
