@@ -57,7 +57,7 @@ jobs:
           )
           
           stdcxx_download_success=false
-          for url in "${stdcxx_urls[@]}"; do
+          for url in "${stdlibcxx_urls[@]}"; do
             echo "尝试从 $url 下载libstdc++6..."
             if wget -q "$url" -O libstdc++6.deb; then
               if dpkg-deb -I libstdc++6.deb &> /dev/null; then
@@ -151,7 +151,6 @@ jobs:
       - name: 安装Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 核心修改：将dmPython版本从2.5.20改为存在的2.5.22
           ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
           
           if ./python/bin/python -c "import dmPython" &> /dev/null; then
@@ -167,11 +166,12 @@ jobs:
             exit 1
           fi
           
+          # 从环境变量获取库路径（确保是英文符号）
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
           LOW_GLIBC_LIBGCC_S_PATH="${{ env.LOW_GLIBC_LIBGCC_S_PATH }}"
           
-          # 构建PyInstaller命令（新增libgcc_s.so.1打包）
+          # 构建PyInstaller命令（关键：所有参数用英文符号，最后加入口脚本）
           PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -180,9 +180,12 @@ jobs:
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
-            --add-binary=\"$LIB_AIO_PATH:.\" \
-            --add-binary=\"$LOW_GLIBC_LIBSTDCPP_PATH:.\" \
-            --add-binary=\"$LOW_GLIBC_LIBGCC_S_PATH:.\""
+            --add-binary=\"${LIB_AIO_PATH}:.\" \
+            --add-binary=\"${LOW_GLIBC_LIBSTDCPP_PATH}:.\" \
+            --add-binary=\"${LOW_GLIBC_LIBGCC_S_PATH}:.\""
+          
+          # 必须加上入口脚本！
+          PYINSTALLER_CMD="${PYINSTALLER_CMD} ./main.py"
           
           echo "执行打包命令: $PYINSTALLER_CMD"
           eval $PYINSTALLER_CMD
