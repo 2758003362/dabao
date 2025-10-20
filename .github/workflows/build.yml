@@ -169,7 +169,7 @@ jobs:
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
           LOW_GLIBC_LIBGCC_S_PATH="${{ env.LOW_GLIBC_LIBGCC_S_PATH }}"
           
-          # 构建PyInstaller命令（新增libgcc_s.so.1打包，并添加入口脚本main.py）
+          # 关键修复：新增 --collect-all numpy 强制收集numpy所有依赖
           PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -178,10 +178,11 @@ jobs:
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
+            --collect-all numpy \  # 新增：完整收集numpy依赖，解决导入错误
             --add-binary=\"$LIB_AIO_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBSTDCPP_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBGCC_S_PATH:.\" \
-            ./main.py"  # 新增：指定入口脚本main.py
+            ./main.py"
           
           echo "执行打包命令: $PYINSTALLER_CMD"
           eval $PYINSTALLER_CMD
