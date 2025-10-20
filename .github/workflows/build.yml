@@ -1,4 +1,4 @@
-name: 达梦API服务打包（兼容GLIBC 2.31 + 避免排队）
+name: 达梦API服务打包（兼容GLIBC 2.31）
 
 on:
   push:
@@ -30,185 +30,88 @@ jobs:
             exit 1
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
-      - name: 安装libaio1并获取低版本libstdc++/libgcc_s
+
+      - name: 安装系统依赖
         run: |
-          # 1. 安装libaio1
-          echo "使用apt安装libaio1..."
+          # 安装达梦数据库依赖libaio
           sudo apt-get update -qq
           sudo apt-get install -y libaio1
           
-          # 验证安装结果
-          if ! dpkg -s libaio1 &> /dev/null; then
-            echo "错误：libaio1安装失败"
-            exit 1
-          fi
-          
-          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
+          # 获取libaio路径
+          LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}')
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
+
+      - name: 安装低版本GLIBC兼容库
+        run: |
+          # 下载Ubuntu 20.04的libstdc++和libgcc（兼容GLIBC 2.31）
+          wget -q "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb" -O libstdc++6.deb
+          wget -q "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libgcc-s1_10.5.0-1ubuntu1~20.04_amd64.deb" -O libgcc-s1.deb
           
-          # 2. 下载Ubuntu 20.04的libstdc++6包
-          echo "下载Ubuntu 20.04的libstdc++6包..."
-          stdcxx_urls=(
-            "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb"
-            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb"
-            "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb"
-            "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libstdc++6_10-20200411-0ubuntu1_amd64.deb"
-          )
+          # 提取库文件
+          mkdir -p low_glibc_libs
+          dpkg-deb -x libstdc++6.deb low_glibc_libs
+          dpkg-deb -x libgcc-s1.deb low_glibc_libs
           
-          stdcxx_download_success=false
-          for url in "${stdcxx_urls[@]}"; do
-            echo "尝试从 $url 下载libstdc++6..."
-            if wget -q "$url" -O libstdc++6.deb; then
-              if dpkg-deb -I libstdc++6.deb &> /dev/null; then
-                stdcxx_download_success=true
-                echo "✅ 下载成功: $(basename $url)"
-                break
-              else
-                echo "下载的文件损坏，尝试下一个源..."
-                rm -f libstdc++6.deb
-              fi
-            else
-              echo "下载失败，尝试下一个源..."
-            fi
-          done
-          
-          if [ "$stdcxx_download_success" = false ]; then
-            echo "错误：所有libstdc++下载源均失败"
-            SYSTEM_LIBSTDCPP_PATH=$(ldconfig -p | grep "libstdc++.so.6" | head -n 1 | awk '{print $4}')
-            if [ -n "$SYSTEM_LIBSTDCPP_PATH" ]; then
-              cp "$SYSTEM_LIBSTDCPP_PATH" ./libstdc++.so.6
-              echo "LOW_GLIBC_LIBSTDCPP_PATH=./libstdc++.so.6" >> $GITHUB_ENV
-              echo "✅ 使用系统libstdc++.so.6作为备选方案"
-            else
-              echo "错误：无法找到可用的libstdc++.so.6"
-              exit 1
-            fi
-          else
-            mkdir -p libstdc++
-            dpkg-deb -x libstdc++6.deb libstdc++
-            LOW_GLIBC_LIBSTDCPP_PATH=$(find ./libstdc++ -name "libstdc++.so.6" | head -n 1)
-            
-            if [ -z "$LOW_GLIBC_LIBSTDCPP_PATH" ] || [ ! -f "$LOW_GLIBC_LIBSTDCPP_PATH" ]; then
-              echo "错误：未找到低版本libstdc++.so.6"
-              exit 1
-            fi
-            
-            echo "LOW_GLIBC_LIBSTDCPP_PATH=$LOW_GLIBC_LIBSTDCPP_PATH" >> $GITHUB_ENV
-            echo "✅ 低版本libstdc++准备完成: $LOW_GLIBC_LIBSTDCPP_PATH"
-          fi
-          # 3. 新增：下载Ubuntu 20.04的libgcc_s1包（解决GLIBC_2.35依赖）
-          echo "下载Ubuntu 20.04的libgcc_s1包..."
-          gccs_urls=(
-            "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libgcc-s1_10.5.0-1ubuntu1~20.04_amd64.deb"
-            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-10/libgcc-s1_10.5.0-1ubuntu1~20.04_amd64.deb"
-            "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-10/libgcc-s1_10.5.0-1ubuntu1~20.04_amd64.deb"
-            "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libgcc-s1_10-20200411-0ubuntu1_amd64.deb"
-          )
-          
-          gccs_download_success=false
-          for url in "${gccs_urls[@]}"; do
-            echo "尝试从 $url 下载libgcc_s1..."
-            if wget -q "$url" -O libgcc_s1.deb; then
-              if dpkg-deb -I libgcc_s1.deb &> /dev/null; then
-                gccs_download_success=true
-                echo "✅ 下载成功: $(basename $url)"
-                break
-              else
-                echo "下载的文件损坏，尝试下一个源..."
-                rm -f libgcc_s1.deb
-              fi
-            else
-              echo "下载失败，尝试下一个源..."
-            fi
-          done
-          
-          if [ "$gccs_download_success" = false ]; then
-            echo "警告：所有libgcc_s1下载源均失败，尝试使用系统自带版本"
-            SYSTEM_LIBGCC_S_PATH=$(ldconfig -p | grep "libgcc_s.so.1" | head -n 1 | awk '{print $4}')
-            if [ -n "$SYSTEM_LIBGCC_S_PATH" ]; then
-              cp "$SYSTEM_LIBGCC_S_PATH" ./libgcc_s.so.1
-              echo "LOW_GLIBC_LIBGCC_S_PATH=./libgcc_s.so.1" >> $GITHUB_ENV
-              echo "✅ 使用系统libgcc_s.so.1作为备选方案"
-            else
-              echo "错误：无法找到可用的libgcc_s.so.1"
-              exit 1
-            fi
-          else
-            mkdir -p libgcc
-            dpkg-deb -x libgcc_s1.deb libgcc
-            LOW_GLIBC_LIBGCC_S_PATH=$(find ./libgcc -name "libgcc_s.so.1" | head -n 1)
-            
-            if [ -z "$LOW_GLIBC_LIBGCC_S_PATH" ] || [ ! -f "$LOW_GLIBC_LIBGCC_S_PATH" ]; then
-              echo "错误：未找到低版本libgcc_s.so.1"
-              exit 1
-            fi
-            
-            echo "LOW_GLIBC_LIBGCC_S_PATH=$LOW_GLIBC_LIBGCC_S_PATH" >> $GITHUB_ENV
-            echo "✅ 低版本libgcc_s准备完成: $LOW_GLIBC_LIBGCC_S_PATH"
-          fi
-      - name: 安装Python依赖（指定numpy兼容版本）
+          # 记录库路径
+          echo "LOW_GLIBC_LIBSTDCPP=$(find ./low_glibc_libs -name 'libstdc++.so.6' | head -n 1)" >> $GITHUB_ENV
+          echo "LOW_GLIBC_LIBGCC=$(find ./low_glibc_libs -name 'libgcc_s.so.1' | head -n 1)" >> $GITHUB_ENV
+
+      - name: 安装Python依赖（版本兼容配置）
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 关键修改：指定numpy==1.23.5（与pandas 1.5.3兼容）
-          ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 numpy==1.23.5 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
+          # 核心依赖：指定兼容版本组合
+          ./python/bin/python -m pip install \
+            dmPython==2.5.22 \
+            pandas==1.5.3 \
+            numpy==1.23.5 \  # 与pandas 1.5.3严格兼容
+            flask==2.2.3 \
+            werkzeug==2.2.3 \
+            pyinstaller==5.13.0
           
-          # 验证numpy与pandas版本兼容性
-          echo "已安装的numpy版本：$(./python/bin/python -c 'import numpy; print(numpy.__version__)')"
-          echo "已安装的pandas版本：$(./python/bin/python -c 'import pandas; print(pandas.__version__)')"
-          
-          if ./python/bin/python -c "import dmPython; import pandas; import numpy" &> /dev/null; then
-            echo "✅ 所有依赖安装成功且兼容"
-          else
-            echo "错误：依赖安装或兼容性检查失败"
-            exit 1
-          fi
-      - name: 打包应用
+          # 验证依赖安装
+          ./python/bin/python -c "import dmPython; import pandas; import flask; print('依赖验证通过')"
+
+      - name: 打包应用（完整依赖收集）
         run: |
           if [ ! -f "./main.py" ]; then
             echo "错误：未找到入口脚本main.py"
             exit 1
           fi
           
-          LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
-          LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
-          LOW_GLIBC_LIBGCC_S_PATH="${{ env.LOW_GLIBC_LIBGCC_S_PATH }}"
-          
-          # 打包命令（确保依赖收集完整）
-          PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
+          # 构建打包命令
+          PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name dm-api-service \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
             --hidden-import=dmPython \
             --hidden-import=dmPython.dbapi2 \
             --hidden-import=pandas \
-            --hidden-import=pandas.core \
-            --hidden-import=pandas.io \
+            --hidden-import=pandas._libs \
+            --hidden-import=pandas._libs.interval \  # 解决pandas内部依赖
             --collect-all numpy \
             --collect-all pandas \
-            --add-binary=\"$LIB_AIO_PATH:.\" \
-            --add-binary=\"$LOW_GLIBC_LIBSTDCPP_PATH:.\" \
-            --add-binary=\"$LOW_GLIBC_LIBGCC_S_PATH:.\" \
+            --collect-all flask \
+            --add-binary="${{ env.LIB_AIO_PATH }}:." \
+            --add-binary="${{ env.LOW_GLIBC_LIBSTDCPP }}:." \
+            --add-binary="${{ env.LOW_GLIBC_LIBGCC }}:." \
             ./main.py"
           
           echo "执行打包命令: $PYINSTALLER_CMD"
           eval $PYINSTALLER_CMD
           
-          if [ ! -f "dist/myapp-linux" ]; then
-            echo "错误：打包失败"
+          # 验证打包结果
+          if [ -f "dist/dm-api-service" ]; then
+            echo "打包成功: $(ls -lh dist/dm-api-service)"
+          else
+            echo "打包失败"
             exit 1
           fi
-          
-          echo "检查最终产物的GLIBC依赖："
-          objdump -T dist/myapp-linux | grep -E "GLIBC_2.3[3-9]|GLIBC_2.[4-9][0-9]" | sort -V | head -10 || echo "✅ 未发现不兼容的高版本GLIBC依赖"
-          
-          echo "打包完成，文件信息："
-          ls -lh dist/myapp-linux
-          file dist/myapp-linux
-      - name: 保存产物
+
+      - name: 保存打包产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-static
-          path: dist/myapp-linux
-          retention-days: 7
+          name: dm-api-service
+          path: dist/dm-api-service
+          retention-days: 14
 
   release:
     needs: build-linux
@@ -218,12 +121,12 @@ jobs:
       - name: 下载产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-static
+          name: dm-api-service
 
       - name: 创建Release
         uses: softprops/action-gh-release@v2
         with:
-          files: myapp-linux
+          files: dm-api-service
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
