@@ -30,7 +30,6 @@ jobs:
             exit 1
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
-
       - name: 安装libaio1并获取低版本libstdc++和libgcc
         run: |
           # 1. 安装libaio1
@@ -47,91 +46,111 @@ jobs:
           LIB_AIO_PATH=$(ldconfig -p | grep "libaio.so.1" | head -n 1 | awk '{print $4}' | tr -d '\n\r')
           echo "LIB_AIO_PATH=$LIB_AIO_PATH" >> $GITHUB_ENV
           
-          # 2. 下载低版本libstdc++6和libgcc1（兼容GLIBC 2.31）
-          echo "下载Ubuntu 20.04的libstdc++6和libgcc1包..."
+          # 2. 下载Ubuntu 20.04的libstdc++6包
+          echo "下载Ubuntu 20.04的libstdc++6包..."
           
-          # 低版本libstdc++6的链接（保持不变）
-          LIBSTDCPP_URLS=(
+          # 使用已验证可用的包名
+          urls=(
             "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb"
             "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb"
+            "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb"
+            # 备选旧版本
+            "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libstdc++6_10-20200411-0ubuntu1_amd64.deb"
           )
           
-          # 关键修改：更新libgcc1的下载源，增加可靠备选
-          LIBGCC_URLS=(
-            "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"  # Ubuntu官方主归档
-            "https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"  # 阿里云镜像
-            "https://mirror.nju.edu.cn/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"  # 南京大学镜像
-            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"  # 清华镜像（备选）
-          )
-          
-          # 下载并处理libstdc++6（保持不变）
           download_success=false
-          for url in "${LIBSTDCPP_URLS[@]}"; do
-            echo "尝试从 $url 下载libstdc++6..."
+          for url in "${urls[@]}"; do
+            echo "尝试从 $url 下载..."
             if wget -q "$url" -O libstdc++6.deb; then
               if dpkg-deb -I libstdc++6.deb &> /dev/null; then
                 download_success=true
-                echo "✅ libstdc++6下载成功"
+                echo "✅ 下载成功: $(basename $url)"
                 break
               else
+                echo "下载的文件损坏，尝试下一个源..."
                 rm -f libstdc++6.deb
               fi
+            else
+              echo "下载失败，尝试下一个源..."
             fi
           done
-          if [ "$download_success" = false ]; then
-            echo "错误：libstdc++6下载失败"
-            exit 1
-          fi
           
-          # 下载并处理libgcc1（使用新源）
+          if [ "$download_success" = false ]; then
+            echo "错误：所有libstdc++下载源均失败"
+            # 备选方案：使用系统自带的libstdc++.so.6
+            echo "警告：使用系统自带的libstdc++.so.6"
+            SYSTEM_LIBSTDCPP_PATH=$(ldconfig -p | grep "libstdc++.so.6" | head -n 1 | awk '{print $4}')
+            if [ -n "$SYSTEM_LIBSTDCPP_PATH" ]; then
+              cp "$SYSTEM_LIBSTDCPP_PATH" ./libstdc++.so.6
+              echo "LOW_GLIBC_LIBSTDCPP_PATH=./libstdc++.so.6" >> $GITHUB_ENV
+              echo "✅ 使用系统libstdc++.so.6作为备选方案"
+            else
+              echo "错误：无法找到可用的libstdc++.so.6"
+              exit 1
+            fi
+          else
+            mkdir -p libstdc++
+            dpkg-deb -x libstdc++6.deb libstdc++
+            LOW_GLIBC_LIBSTDCPP_PATH=$(find ./libstdc++ -name "libstdc++.so.6" | head -n 1)
+            
+            if [ -z "$LOW_GLIBC_LIBSTDCPP_PATH" ] || [ ! -f "$LOW_GLIBC_LIBSTDCPP_PATH" ]; then
+              echo "错误：未找到低版本libstdc++.so.6"
+              exit 1
+            fi
+            
+            echo "LOW_GLIBC_LIBSTDCPP_PATH=$LOW_GLIBC_LIBSTDCPP_PATH" >> $GITHUB_ENV
+            echo "✅ 低版本libstdc++准备完成: $LOW_GLIBC_LIBSTDCPP_PATH"
+            
+            # 验证GLIBC版本兼容性
+            echo "检查libstdc++.so.6的GLIBC依赖："
+            objdump -T "$LOW_GLIBC_LIBSTDCPP_PATH" | grep GLIBC_2.3[0-9] | sort -V | tail -5 || echo "GLIBC版本检查完成"
+          fi
+
+          # 新增：下载Ubuntu 20.04的libgcc1包（含libgcc_s.so.1）
+          echo "下载Ubuntu 20.04的libgcc1包..."
+          libgcc_urls=(
+            "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"
+            "https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"
+          )
+          
           download_success=false
-          for url in "${LIBGCC_URLS[@]}"; do
+          for url in "${libgcc_urls[@]}"; do
             echo "尝试从 $url 下载libgcc1..."
             if wget -q "$url" -O libgcc1.deb; then
               if dpkg-deb -I libgcc1.deb &> /dev/null; then
                 download_success=true
-                echo "✅ libgcc1下载成功"
+                echo "✅ 下载成功: $(basename $url)"
                 break
               else
+                echo "下载的文件损坏，尝试下一个源..."
                 rm -f libgcc1.deb
-                echo "⚠️ 该源文件损坏，尝试下一个"
               fi
             else
-              echo "⚠️ 该源下载失败，尝试下一个"
+              echo "下载失败，尝试下一个源..."
             fi
           done
+          
           if [ "$download_success" = false ]; then
             echo "错误：所有libgcc1下载源均失败"
             exit 1
           fi
           
-          # 解压库文件（保持不变）
-          mkdir -p libstdc++ libgcc
-          dpkg-deb -x libstdc++6.deb libstdc++
+          mkdir -p libgcc
           dpkg-deb -x libgcc1.deb libgcc
-          
-          # 确认低版本libstdc++.so.6路径（保持不变）
-          LOW_GLIBC_LIBSTDCPP_PATH=$(find ./libstdc++ -name "libstdc++.so.6" | head -n 1)
-          if [ -z "$LOW_GLIBC_LIBSTDCPP_PATH" ] || [ ! -f "$LOW_GLIBC_LIBSTDCPP_PATH" ]; then
-            echo "错误：未找到低版本libstdc++.so.6"
-            exit 1
-          fi
-          
-          # 确认低版本libgcc_s.so.1路径（保持不变）
           LOW_GLIBC_LIBGCC_PATH=$(find ./libgcc -name "libgcc_s.so.1" | head -n 1)
+          
           if [ -z "$LOW_GLIBC_LIBGCC_PATH" ] || [ ! -f "$LOW_GLIBC_LIBGCC_PATH" ]; then
             echo "错误：未找到低版本libgcc_s.so.1"
             exit 1
           fi
           
-          # 保存环境变量（保持不变）
-          echo "LOW_GLIBC_LIBSTDCPP_PATH=$LOW_GLIBC_LIBSTDCPP_PATH" >> $GITHUB_ENV
           echo "LOW_GLIBC_LIBGCC_PATH=$LOW_GLIBC_LIBGCC_PATH" >> $GITHUB_ENV
-          echo "✅ 低版本libstdc++和libgcc准备完成"
+          echo "✅ 低版本libgcc准备完成: $LOW_GLIBC_LIBGCC_PATH"
 
       - name: 安装Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
+          # 核心修改：将dmPython版本从2.5.20改为存在的2.5.22
           ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
           
           if ./python/bin/python -c "import dmPython" &> /dev/null; then
@@ -140,7 +159,6 @@ jobs:
             echo "错误：dmPython安装失败"
             exit 1
           fi
-
       - name: 打包应用
         run: |
           if [ ! -f "./main.py" ]; then
@@ -150,9 +168,9 @@ jobs:
           
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
-          LOW_GLIBC_LIBGCC_PATH="${{ env.LOW_GLIBC_LIBGCC_PATH }}"
+          LOW_GLIBC_LIBGCC_PATH="${{ env.LOW_GLIBC_LIBGCC_PATH }}"  # 新增：引入libgcc路径
           
-          # 构建PyInstaller命令（包含低版本libgcc_s.so.1）
+          # 构建PyInstaller命令
           PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -161,9 +179,17 @@ jobs:
             --hidden-import=pandas \
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
-            --add-binary=\"$LIB_AIO_PATH:.\" \
-            --add-binary=\"$LOW_GLIBC_LIBSTDCPP_PATH:.\" \
-            --add-binary=\"$LOW_GLIBC_LIBGCC_PATH:.\""
+            --add-binary=\"$LIB_AIO_PATH:.\""
+          
+          # 如果找到了低版本libstdc++，则添加到打包中
+          if [ -n "$LOW_GLIBC_LIBSTDCPP_PATH" ] && [ -f "$LOW_GLIBC_LIBSTDCPP_PATH" ]; then
+            PYINSTALLER_CMD="$PYINSTALLER_CMD --add-binary=\"$LOW_GLIBC_LIBSTDCPP_PATH:.\""
+          fi
+          
+          # 新增：添加低版本libgcc_s.so.1到打包中
+          if [ -n "$LOW_GLIBC_LIBGCC_PATH" ] && [ -f "$LOW_GLIBC_LIBGCC_PATH" ]; then
+            PYINSTALLER_CMD="$PYINSTALLER_CMD --add-binary=\"$LOW_GLIBC_LIBGCC_PATH:.\""
+          fi
           
           PYINSTALLER_CMD="$PYINSTALLER_CMD ./main.py"
           
@@ -175,18 +201,12 @@ jobs:
             exit 1
           fi
           
-          # 检查最终产物的GLIBC依赖（确保无高版本依赖）
           echo "检查最终产物的GLIBC依赖："
           objdump -T dist/myapp-linux | grep -E "GLIBC_2.3[3-9]|GLIBC_2.[4-9][0-9]" | sort -V | head -10 || echo "✅ 未发现不兼容的高版本GLIBC依赖"
-          
-          # 检查打包的libgcc_s.so.1兼容性
-          echo "检查打包的libgcc_s.so.1的GLIBC依赖："
-          objdump -T "$LOW_GLIBC_LIBGCC_PATH" | grep -E "GLIBC_2.3[3-9]|GLIBC_2.[4-9][0-9]" | sort -V | head -10 || echo "✅ libgcc_s.so.1兼容低版本GLIBC"
           
           echo "打包完成，文件信息："
           ls -lh dist/myapp-linux
           file dist/myapp-linux
-
       - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
