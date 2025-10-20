@@ -30,6 +30,7 @@ jobs:
             exit 1
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
+
       - name: 安装libaio1并获取低版本libstdc++/libgcc_s
         run: |
           # 1. 安装libaio1
@@ -96,6 +97,7 @@ jobs:
             echo "LOW_GLIBC_LIBSTDCPP_PATH=$LOW_GLIBC_LIBSTDCPP_PATH" >> $GITHUB_ENV
             echo "✅ 低版本libstdc++准备完成: $LOW_GLIBC_LIBSTDCPP_PATH"
           fi
+
           # 3. 新增：下载Ubuntu 20.04的libgcc_s1包（解决GLIBC_2.35依赖）
           echo "下载Ubuntu 20.04的libgcc_s1包..."
           gccs_urls=(
@@ -146,6 +148,7 @@ jobs:
             echo "LOW_GLIBC_LIBGCC_S_PATH=$LOW_GLIBC_LIBGCC_S_PATH" >> $GITHUB_ENV
             echo "✅ 低版本libgcc_s准备完成: $LOW_GLIBC_LIBGCC_S_PATH"
           fi
+
       - name: 安装Python依赖（指定numpy兼容版本）
         run: |
           ./python/bin/python -m pip install --upgrade pip
@@ -162,10 +165,11 @@ jobs:
             echo "错误：依赖安装或兼容性检查失败"
             exit 1
           fi
+
       - name: 打包应用
         run: |
-          if [ ! -f "./main.py" ]; then
-            echo "错误：未找到入口脚本main.py"
+          if [ ! -f "./PythonDMService.py" ]; then  # ✅ 检查新的入口脚本名
+            echo "错误：未找到入口脚本 PythonDMService.py"
             exit 1
           fi
           
@@ -173,7 +177,7 @@ jobs:
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
           LOW_GLIBC_LIBGCC_S_PATH="${{ env.LOW_GLIBC_LIBGCC_S_PATH }}"
           
-          # 打包命令（确保依赖收集完整）
+          # 打包命令（仅修改最后的入口脚本名）
           PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -187,7 +191,7 @@ jobs:
             --add-binary=\"$LIB_AIO_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBSTDCPP_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBGCC_S_PATH:.\" \
-            ./main.py"
+            ./PythonDMService.py"  # ✅ 改为新的入口脚本名
           
           echo "执行打包命令: $PYINSTALLER_CMD"
           eval $PYINSTALLER_CMD
@@ -203,6 +207,7 @@ jobs:
           echo "打包完成，文件信息："
           ls -lh dist/myapp-linux
           file dist/myapp-linux
+
       - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
