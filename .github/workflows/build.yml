@@ -109,7 +109,7 @@ jobs:
             exit 1
           fi
 
-      - name: 打包应用（使用LD_LIBRARY_PATH覆盖）
+      - name: 打包应用（使用spec文件）
         run: |
           if [ ! -f "./main.py" ]; then
             echo "错误：未找到入口脚本main.py"
@@ -197,7 +197,7 @@ EOF
           echo "打包完成，文件信息："
           ls -lh dist/myapp-linux
           file dist/myapp-linux
-      
+
       - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
