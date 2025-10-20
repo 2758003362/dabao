@@ -50,19 +50,21 @@ jobs:
           # 2. 下载低版本libstdc++6和libgcc1（兼容GLIBC 2.31）
           echo "下载Ubuntu 20.04的libstdc++6和libgcc1包..."
           
-          # 低版本libstdc++6的链接
+          # 低版本libstdc++6的链接（保持不变）
           LIBSTDCPP_URLS=(
             "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb"
             "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-10/libstdc++6_10.5.0-1ubuntu1~20.04_amd64.deb"
           )
           
-          # 低版本libgcc1的链接（包含libgcc_s.so.1）
+          # 关键修改：更新libgcc1的下载源，增加可靠备选
           LIBGCC_URLS=(
-            "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"
-            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"
+            "http://archive.ubuntu.com/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"  # Ubuntu官方主归档
+            "https://mirrors.aliyun.com/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"  # 阿里云镜像
+            "https://mirror.nju.edu.cn/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"  # 南京大学镜像
+            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/g/gcc-10/libgcc1_10.5.0-1ubuntu1~20.04_amd64.deb"  # 清华镜像（备选）
           )
           
-          # 下载并处理libstdc++6
+          # 下载并处理libstdc++6（保持不变）
           download_success=false
           for url in "${LIBSTDCPP_URLS[@]}"; do
             echo "尝试从 $url 下载libstdc++6..."
@@ -81,7 +83,7 @@ jobs:
             exit 1
           fi
           
-          # 下载并处理libgcc1（提取libgcc_s.so.1）
+          # 下载并处理libgcc1（使用新源）
           download_success=false
           for url in "${LIBGCC_URLS[@]}"; do
             echo "尝试从 $url 下载libgcc1..."
@@ -92,34 +94,37 @@ jobs:
                 break
               else
                 rm -f libgcc1.deb
+                echo "⚠️ 该源文件损坏，尝试下一个"
               fi
+            else
+              echo "⚠️ 该源下载失败，尝试下一个"
             fi
           done
           if [ "$download_success" = false ]; then
-            echo "错误：libgcc1下载失败"
+            echo "错误：所有libgcc1下载源均失败"
             exit 1
           fi
           
-          # 解压库文件
+          # 解压库文件（保持不变）
           mkdir -p libstdc++ libgcc
           dpkg-deb -x libstdc++6.deb libstdc++
           dpkg-deb -x libgcc1.deb libgcc
           
-          # 确认低版本libstdc++.so.6路径
+          # 确认低版本libstdc++.so.6路径（保持不变）
           LOW_GLIBC_LIBSTDCPP_PATH=$(find ./libstdc++ -name "libstdc++.so.6" | head -n 1)
           if [ -z "$LOW_GLIBC_LIBSTDCPP_PATH" ] || [ ! -f "$LOW_GLIBC_LIBSTDCPP_PATH" ]; then
             echo "错误：未找到低版本libstdc++.so.6"
             exit 1
           fi
           
-          # 确认低版本libgcc_s.so.1路径
+          # 确认低版本libgcc_s.so.1路径（保持不变）
           LOW_GLIBC_LIBGCC_PATH=$(find ./libgcc -name "libgcc_s.so.1" | head -n 1)
           if [ -z "$LOW_GLIBC_LIBGCC_PATH" ] || [ ! -f "$LOW_GLIBC_LIBGCC_PATH" ]; then
             echo "错误：未找到低版本libgcc_s.so.1"
             exit 1
           fi
           
-          # 保存环境变量
+          # 保存环境变量（保持不变）
           echo "LOW_GLIBC_LIBSTDCPP_PATH=$LOW_GLIBC_LIBSTDCPP_PATH" >> $GITHUB_ENV
           echo "LOW_GLIBC_LIBGCC_PATH=$LOW_GLIBC_LIBGCC_PATH" >> $GITHUB_ENV
           echo "✅ 低版本libstdc++和libgcc准备完成"
