@@ -149,7 +149,6 @@ jobs:
       - name: 安装Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 核心修改：将dmPython版本从2.5.20改为存在的2.5.22
           ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
           
           if ./python/bin/python -c "import dmPython" &> /dev/null; then
@@ -169,7 +168,7 @@ jobs:
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
           LOW_GLIBC_LIBGCC_S_PATH="${{ env.LOW_GLIBC_LIBGCC_S_PATH }}"
           
-          # 修复：删除命令中的注释，确保\后仅换行（无空格/注释）
+          # 打包命令（已移除所有注释，确保\后仅换行）
           PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
