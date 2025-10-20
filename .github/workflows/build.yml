@@ -146,15 +146,20 @@ jobs:
             echo "LOW_GLIBC_LIBGCC_S_PATH=$LOW_GLIBC_LIBGCC_S_PATH" >> $GITHUB_ENV
             echo "✅ 低版本libgcc_s准备完成: $LOW_GLIBC_LIBGCC_S_PATH"
           fi
-      - name: 安装Python依赖
+      - name: 安装Python依赖（指定numpy兼容版本）
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
+          # 关键修改：指定numpy==1.23.5（与pandas 1.5.3兼容）
+          ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 numpy==1.23.5 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
           
-          if ./python/bin/python -c "import dmPython" &> /dev/null; then
-            echo "✅ dmPython安装成功"
+          # 验证numpy与pandas版本兼容性
+          echo "已安装的numpy版本：$(./python/bin/python -c 'import numpy; print(numpy.__version__)')"
+          echo "已安装的pandas版本：$(./python/bin/python -c 'import pandas; print(pandas.__version__)')"
+          
+          if ./python/bin/python -c "import dmPython; import pandas; import numpy" &> /dev/null; then
+            echo "✅ 所有依赖安装成功且兼容"
           else
-            echo "错误：dmPython安装失败"
+            echo "错误：依赖安装或兼容性检查失败"
             exit 1
           fi
       - name: 打包应用
@@ -168,7 +173,7 @@ jobs:
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
           LOW_GLIBC_LIBGCC_S_PATH="${{ env.LOW_GLIBC_LIBGCC_S_PATH }}"
           
-          # 打包命令（已移除所有注释，确保\后仅换行）
+          # 打包命令（确保依赖收集完整）
           PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -178,6 +183,7 @@ jobs:
             --hidden-import=pandas.core \
             --hidden-import=pandas.io \
             --collect-all numpy \
+            --collect-all pandas \
             --add-binary=\"$LIB_AIO_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBSTDCPP_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBGCC_S_PATH:.\" \
