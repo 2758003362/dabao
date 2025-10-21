@@ -31,13 +31,13 @@ jobs:
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
 
-      - name: 验证达梦加密库（仓库lib/目录）
+      - name: 验证达梦加密库（仓库dm_libs/目录）
         run: |
           echo "开始验证仓库中的达梦加密库..."
           
-          # 检查lib/目录是否存在
-          if [ ! -d "./lib" ]; then
-            echo "错误：仓库中未找到lib/目录，请确认目录名称正确"
+          # 检查dm_libs/目录是否存在（核心修改：适配实际目录名）
+          if [ ! -d "./dm_libs" ]; then
+            echo "错误：仓库中未找到dm_libs/目录，请确认目录名称正确"
             exit 1
           fi
           
@@ -52,22 +52,22 @@ jobs:
           # 检查每个库文件是否存在
           missing_libs=()
           for lib in "${REQUIRED_LIBS[@]}"; do
-            if [ ! -f "./lib/$lib" ]; then
+            if [ ! -f "./dm_libs/$lib" ]; then
               missing_libs+=("$lib")
             fi
           done
           
           # 输出检查结果
           if [ ${#missing_libs[@]} -ne 0 ]; then
-            echo "错误：lib/目录中缺少以下加密库文件：${missing_libs[*]}"
+            echo "错误：dm_libs/目录中缺少以下加密库文件：${missing_libs[*]}"
             exit 1
           else
             echo "✅ 所有必需的达梦加密库文件已找到"
-            ls -la ./lib/  # 显示目录内容，确认文件存在
+            ls -la ./dm_libs/  # 显示目录内容，确认文件存在
           fi
           
           # 将库文件路径存入环境变量，供后续打包使用
-          echo "DM_LIBS_PATH=$(pwd)/lib" >> $GITHUB_ENV
+          echo "DM_LIBS_PATH=$(pwd)/dm_libs" >> $GITHUB_ENV
 
       - name: 安装libaio1并获取低版本libstdc++/libgcc_s
         run: |
@@ -214,9 +214,9 @@ jobs:
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
           LOW_GLIBC_LIBGCC_S_PATH="${{ env.LOW_GLIBC_LIBGCC_S_PATH }}"
-          DM_LIBS_PATH="${{ env.DM_LIBS_PATH }}"  # 从仓库lib/目录获取加密库
+          DM_LIBS_PATH="${{ env.DM_LIBS_PATH }}"  # 从仓库dm_libs/目录获取加密库
           
-          # 打包命令：添加lib/目录下的所有达梦加密库
+          # 打包命令：添加dm_libs/目录下的所有达梦加密库
           PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
