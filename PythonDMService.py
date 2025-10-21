@@ -25,7 +25,7 @@ def convert_datetime(obj):
 def get_multiple_result_sets(strSp,strParam):
     # 数据库连接参数
     conn_params = {
-        'server': '192.168.0.191',  # 服务器地址
+        'server': 'localhost',  # 服务器地址
         'user': 'JZX',  # 用户名
         'password': 'XFgs@345',  # 密码
         'port': 5236,  # 端口号，默认5236
