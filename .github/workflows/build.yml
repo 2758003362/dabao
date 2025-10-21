@@ -31,35 +31,43 @@ jobs:
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
 
-      - name: 从代码仓库获取达梦加密库
+      - name: 验证达梦加密库（仓库lib/目录）
         run: |
-          echo "从代码仓库lib目录获取达梦加密库..."
+          echo "开始验证仓库中的达梦加密库..."
           
-          # 检查lib目录中的文件
-          echo "lib目录中的文件:"
-          ls -la lib/ || echo "lib目录不存在"
-          
-          # 复制所有达梦相关的库文件
-          if [ -d "lib" ]; then
-            # 复制所有.so文件
-            cp lib/*.so ./ || echo "没有.so文件可复制"
-            
-            echo "✅ 已从lib目录复制以下文件:"
-            ls -la *.so 2>/dev/null || echo "没有.so文件"
-          else
-            echo "❌ lib目录不存在"
+          # 检查lib/目录是否存在
+          if [ ! -d "./lib" ]; then
+            echo "错误：仓库中未找到lib/目录，请确认目录名称正确"
             exit 1
           fi
           
-          # 验证必要的文件是否存在
-          REQUIRED_FILES=("libdmcrypt.so" "libdmdpi.so")
-          for file in "${REQUIRED_FILES[@]}"; do
-            if [ -f "$file" ]; then
-              echo "✅ $file 存在"
-            else
-              echo "❌ $file 不存在"
+          # 定义需要的加密库文件列表（根据你的实际文件调整）
+          REQUIRED_LIBS=(
+            "libcryptocme.so"
+            "libdmcrypt.so"
+            "libdmdpi.so"
+            "libdmgmssl.so"
+          )
+          
+          # 检查每个库文件是否存在
+          missing_libs=()
+          for lib in "${REQUIRED_LIBS[@]}"; do
+            if [ ! -f "./lib/$lib" ]; then
+              missing_libs+=("$lib")
             fi
           done
+          
+          # 输出检查结果
+          if [ ${#missing_libs[@]} -ne 0 ]; then
+            echo "错误：lib/目录中缺少以下加密库文件：${missing_libs[*]}"
+            exit 1
+          else
+            echo "✅ 所有必需的达梦加密库文件已找到"
+            ls -la ./lib/  # 显示目录内容，确认文件存在
+          fi
+          
+          # 将库文件路径存入环境变量，供后续打包使用
+          echo "DM_LIBS_PATH=$(pwd)/lib" >> $GITHUB_ENV
 
       - name: 安装libaio1并获取低版本libstdc++/libgcc_s
         run: |
@@ -184,7 +192,7 @@ jobs:
           ./python/bin/python -m pip install --upgrade pip
           ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 numpy==1.23.5 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
           
-          # 验证依赖
+          # 验证依赖兼容性
           echo "已安装的numpy版本：$(./python/bin/python -c 'import numpy; print(numpy.__version__)')"
           echo "已安装的pandas版本：$(./python/bin/python -c 'import pandas; print(pandas.__version__)')"
           
@@ -195,7 +203,7 @@ jobs:
             exit 1
           fi
 
-      - name: 打包应用
+      - name: 打包应用（包含达梦加密库）
         run: |
           if [ ! -f "./PythonDMService.py" ]; then
             echo "错误：未找到入口脚本 PythonDMService.py"
@@ -206,26 +214,9 @@ jobs:
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
           LOW_GLIBC_LIBGCC_S_PATH="${{ env.LOW_GLIBC_LIBGCC_S_PATH }}"
+          DM_LIBS_PATH="${{ env.DM_LIBS_PATH }}"  # 从仓库lib/目录获取加密库
           
-          echo "✅ 当前目录中的库文件:"
-          ls -la *.so 2>/dev/null || echo "没有.so文件"
-          
-          # 构建添加库文件的参数
-          LIBRARY_ARGS=""
-          for lib_file in *.so; do
-            if [ -f "$lib_file" ]; then
-              LIBRARY_ARGS="$LIBRARY_ARGS --add-binary=\"$lib_file:.\""
-              echo "✅ 将包含库文件: $lib_file"
-            fi
-          done
-          
-          # 如果没有找到任何.so文件，创建警告但继续构建
-          if [ -z "$LIBRARY_ARGS" ]; then
-            echo "⚠️ 警告：没有找到任何达梦加密库文件"
-            echo "应用可能无法连接到达梦数据库"
-          fi
-          
-          # 打包命令
+          # 打包命令：添加lib/目录下的所有达梦加密库
           PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -239,7 +230,10 @@ jobs:
             --add-binary=\"$LIB_AIO_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBSTDCPP_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBGCC_S_PATH:.\" \
-            $LIBRARY_ARGS \
+            --add-binary=\"$DM_LIBS_PATH/libcryptocme.so:.\" \
+            --add-binary=\"$DM_LIBS_PATH/libdmcrypt.so:.\" \
+            --add-binary=\"$DM_LIBS_PATH/libdmdpi.so:.\" \
+            --add-binary=\"$DM_LIBS_PATH/libdmgmssl.so:.\" \
             ./PythonDMService.py"
           
           echo "执行打包命令: $PYINSTALLER_CMD"
@@ -250,90 +244,35 @@ jobs:
             exit 1
           fi
           
+          echo "检查最终产物的GLIBC依赖："
+          objdump -T dist/myapp-linux | grep -E "GLIBC_2.3[3-9]|GLIBC_2.[4-9][0-9]" | sort -V | head -10 || echo "✅ 未发现不兼容的高版本GLIBC依赖"
+          
           echo "打包完成，文件信息："
           ls -lh dist/myapp-linux
           file dist/myapp-linux
 
-      - name: 创建启动脚本
+      - name: 创建启动脚本（确保库路径正确）
         run: |
-          # 创建启动脚本
           cat > dist/start.sh << 'EOF'
           #!/bin/bash
           
-          # 达梦API服务启动脚本
-          echo "启动达梦API服务..."
-          
-          # 设置库路径
+          # 显式设置库路径，确保达梦加密库能被加载
           export LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH
           
-          # 检查库文件
-          echo "检查库文件..."
-          for lib in libdmcrypt.so libdmdpi.so libcryptocme.so libdmgmssl.so; do
-            if [ -f "./$lib" ]; then
-              echo "✅ $lib 存在"
-            else
-              echo "⚠️ $lib 未找到（可能已打包进可执行文件）"
-            fi
-          done
-          
-          echo "启动服务..."
+          echo "启动达梦API服务..."
           ./myapp-linux
           EOF
           
           chmod +x dist/start.sh
           echo "✅ 启动脚本创建完成"
 
-      - name: 创建说明文档
-        run: |
-          # 创建说明文档
-          cat > dist/README.md << 'EOF'
-          # 达梦API服务使用说明
-          
-          此版本已包含以下达梦加密库文件：
-          - libdmcrypt.so
-          - libdmdpi.so 
-          - libcryptocme.so
-          - libdmgmssl.so
-          
-          ## 启动方式
-          
-          方法1：直接运行
-          ```bash
-          ./myapp-linux
-          ```
-          
-          方法2：使用启动脚本（推荐）
-          ```bash
-          chmod +x start.sh
-          ./start.sh
-          ```
-          
-          ## 如果仍有加密错误
-          
-          如果仍然出现"加密模块加载失败"错误，请检查：
-          1. 确保这些库文件与可执行文件在同一目录
-          2. 尝试设置LD_LIBRARY_PATH环境变量：
-             ```bash
-             export LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH
-             ./myapp-linux
-             ```
-          
-          ## API端点
-          - JSON服务: http://localhost:5000/jsonService
-          - XML服务: http://localhost:5000/xmlService
-          - 用户服务: http://localhost:5000/users
-          EOF
-          
-          echo "✅ 说明文档创建完成"
-
       - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-with-dameng-libs
+          name: myapp-static-with-dmlibs
           path: |
             dist/myapp-linux
             dist/start.sh
-            dist/README.md
           retention-days: 7
 
   release:
@@ -344,7 +283,7 @@ jobs:
       - name: 下载产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-with-dameng-libs
+          name: myapp-static-with-dmlibs
 
       - name: 创建Release
         uses: softprops/action-gh-release@v2
@@ -352,7 +291,6 @@ jobs:
           files: |
             myapp-linux
             start.sh
-            README.md
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
