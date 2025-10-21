@@ -1,4 +1,4 @@
-name: 达梦API服务打包（兼容GLIBC 2.31 + 避免排队）
+name: 达梦API服务打包（兼容GLIBC 2.31 + 包含加密模块）
 
 on:
   push:
@@ -98,7 +98,7 @@ jobs:
             echo "✅ 低版本libstdc++准备完成: $LOW_GLIBC_LIBSTDCPP_PATH"
           fi
 
-          # 3. 新增：下载Ubuntu 20.04的libgcc_s1包（解决GLIBC_2.35依赖）
+          # 3. 下载Ubuntu 20.04的libgcc_s1包
           echo "下载Ubuntu 20.04的libgcc_s1包..."
           gccs_urls=(
             "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libgcc-s1_10.5.0-1ubuntu1~20.04_amd64.deb"
@@ -149,13 +149,11 @@ jobs:
             echo "✅ 低版本libgcc_s准备完成: $LOW_GLIBC_LIBGCC_S_PATH"
           fi
 
-      - name: 安装Python依赖（指定numpy兼容版本）
+      - name: 安装Python依赖
         run: |
           ./python/bin/python -m pip install --upgrade pip
-          # 关键修改：指定numpy==1.23.5（与pandas 1.5.3兼容）
           ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 numpy==1.23.5 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
           
-          # 验证numpy与pandas版本兼容性
           echo "已安装的numpy版本：$(./python/bin/python -c 'import numpy; print(numpy.__version__)')"
           echo "已安装的pandas版本：$(./python/bin/python -c 'import pandas; print(pandas.__version__)')"
           
@@ -166,9 +164,37 @@ jobs:
             exit 1
           fi
 
+      - name: 获取达梦加密库
+        run: |
+          # 这里假设您已经将达梦加密库文件放入仓库的dm_libs目录
+          # 如果没有，您需要从达梦安装目录复制这些文件
+          if [ ! -d "dm_libs" ]; then
+            echo "错误：未找到dm_libs目录，请确保已包含达梦加密库文件"
+            exit 1
+          fi
+          
+          # 检查必要的加密库文件
+          REQUIRED_LIBS=("libdmcrypto.so" "libdmdpi.so")
+          missing_libs=()
+          
+          for lib in "${REQUIRED_LIBS[@]}"; do
+            if [ ! -f "dm_libs/$lib" ]; then
+              missing_libs+=("$lib")
+            fi
+          done
+          
+          if [ ${#missing_libs[@]} -ne 0 ]; then
+            echo "错误：缺少必要的达梦加密库文件: ${missing_libs[*]}"
+            exit 1
+          fi
+          
+          # 设置加密库路径变量
+          echo "DM_CRYPTO_LIBS=$(ls dm_libs/libdm*.so | tr '\n' ' ')" >> $GITHUB_ENV
+          echo "✅ 达梦加密库准备完成"
+
       - name: 打包应用
         run: |
-          if [ ! -f "./PythonDMService.py" ]; then  # ✅ 检查新的入口脚本名
+          if [ ! -f "./PythonDMService.py" ]; then
             echo "错误：未找到入口脚本 PythonDMService.py"
             exit 1
           fi
@@ -176,8 +202,9 @@ jobs:
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
           LOW_GLIBC_LIBGCC_S_PATH="${{ env.LOW_GLIBC_LIBGCC_S_PATH }}"
+          DM_CRYPTO_LIBS="${{ env.DM_CRYPTO_LIBS }}"
           
-          # 打包命令（仅修改最后的入口脚本名）
+          # 打包命令（包含达梦加密库）
           PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -191,7 +218,8 @@ jobs:
             --add-binary=\"$LIB_AIO_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBSTDCPP_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBGCC_S_PATH:.\" \
-            ./PythonDMService.py"  # ✅ 改为新的入口脚本名
+            --add-binary=\"$DM_CRYPTO_LIBS:.\" \
+            ./PythonDMService.py"
           
           echo "执行打包命令: $PYINSTALLER_CMD"
           eval $PYINSTALLER_CMD
