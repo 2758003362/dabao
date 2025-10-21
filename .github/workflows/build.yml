@@ -1,4 +1,4 @@
-name: 达梦API服务打包（兼容GLIBC 2.31 + 包含加密模块）
+name: 达梦API服务打包（包含加密库）
 
 on:
   push:
@@ -30,6 +30,62 @@ jobs:
             exit 1
           fi
           echo "✅ 静态Python配置完成，版本：$(./python/bin/python --version)"
+
+      - name: 获取达梦数据库加密库
+        run: |
+          echo "开始获取达梦数据库加密库..."
+          
+          # 方法1: 尝试从达梦官方Docker镜像获取加密库
+          echo "方法1: 从达梦官方Docker镜像获取加密库..."
+          if docker pull dmhub/dameng:latest; then
+            echo "✅ Docker镜像拉取成功"
+            docker create --name dm-temp dmhub/dameng:latest
+            if docker cp dm-temp:/opt/dmdbms/bin/libdmcrypto.so ./; then
+              echo "✅ libdmcrypto.so 获取成功"
+            else
+              echo "❌ libdmcrypto.so 获取失败"
+            fi
+            
+            if docker cp dm-temp:/opt/dmdbms/bin/libdmdpi.so ./; then
+              echo "✅ libdmdpi.so 获取成功"
+            else
+              echo "❌ libdmdpi.so 获取失败"
+            fi
+            
+            if docker cp dm-temp:/opt/dmdbms/bin/libdmdpis.so ./; then
+              echo "✅ libdmdpis.so 获取成功"
+            else
+              echo "❌ libdmdpis.so 获取失败"
+            fi
+            
+            docker rm dm-temp
+          else
+            echo "❌ Docker镜像拉取失败，尝试方法2"
+          fi
+          
+          # 方法2: 如果Docker方法失败，尝试从预置位置下载
+          if [ ! -f "libdmcrypto.so" ] || [ ! -f "libdmdpi.so" ] || [ ! -f "libdmdpis.so" ]; then
+            echo "方法2: 从备用源下载加密库..."
+            
+            # 这里可以添加从其他可靠源下载加密库的代码
+            # 例如从内部服务器或达梦官方资源下载
+            
+            echo "⚠️ 请确保加密库文件已存在于代码仓库中"
+          fi
+          
+          # 最终验证
+          if [ -f "libdmcrypto.so" ] && [ -f "libdmdpi.so" ] && [ -f "libdmdpis.so" ]; then
+            echo "✅ 所有达梦加密库获取成功"
+            echo "文件详情:"
+            ls -la libdmcrypto.so libdmdpi.so libdmdpis.so
+          else
+            echo "❌ 错误：缺少必要的达梦加密库文件"
+            echo "请确保以下文件存在:"
+            echo " - libdmcrypto.so"
+            echo " - libdmdpi.so"
+            echo " - libdmdpis.so"
+            exit 1
+          fi
 
       - name: 安装libaio1并获取低版本libstdc++/libgcc_s
         run: |
@@ -98,7 +154,7 @@ jobs:
             echo "✅ 低版本libstdc++准备完成: $LOW_GLIBC_LIBSTDCPP_PATH"
           fi
 
-          # 3. 下载Ubuntu 20.04的libgcc_s1包
+          # 3. 新增：下载Ubuntu 20.04的libgcc_s1包（解决GLIBC_2.35依赖）
           echo "下载Ubuntu 20.04的libgcc_s1包..."
           gccs_urls=(
             "http://security.ubuntu.com/ubuntu/pool/main/g/gcc-10/libgcc-s1_10.5.0-1ubuntu1~20.04_amd64.deb"
@@ -149,11 +205,13 @@ jobs:
             echo "✅ 低版本libgcc_s准备完成: $LOW_GLIBC_LIBGCC_S_PATH"
           fi
 
-      - name: 安装Python依赖
+      - name: 安装Python依赖（指定numpy兼容版本）
         run: |
           ./python/bin/python -m pip install --upgrade pip
+          # 关键修改：指定numpy==1.23.5（与pandas 1.5.3兼容）
           ./python/bin/python -m pip install dmPython==2.5.22 pandas==1.5.3 numpy==1.23.5 flask==2.2.3 werkzeug==2.2.3 pyinstaller==5.13.0
           
+          # 验证numpy与pandas版本兼容性
           echo "已安装的numpy版本：$(./python/bin/python -c 'import numpy; print(numpy.__version__)')"
           echo "已安装的pandas版本：$(./python/bin/python -c 'import pandas; print(pandas.__version__)')"
           
@@ -164,47 +222,28 @@ jobs:
             exit 1
           fi
 
-      - name: 获取达梦加密库
-        run: |
-          # 这里假设您已经将达梦加密库文件放入仓库的dm_libs目录
-          # 如果没有，您需要从达梦安装目录复制这些文件
-          if [ ! -d "dm_libs" ]; then
-            echo "错误：未找到dm_libs目录，请确保已包含达梦加密库文件"
-            exit 1
-          fi
-          
-          # 检查必要的加密库文件
-          REQUIRED_LIBS=("libdmcrypto.so" "libdmdpi.so")
-          missing_libs=()
-          
-          for lib in "${REQUIRED_LIBS[@]}"; do
-            if [ ! -f "dm_libs/$lib" ]; then
-              missing_libs+=("$lib")
-            fi
-          done
-          
-          if [ ${#missing_libs[@]} -ne 0 ]; then
-            echo "错误：缺少必要的达梦加密库文件: ${missing_libs[*]}"
-            exit 1
-          fi
-          
-          # 设置加密库路径变量
-          echo "DM_CRYPTO_LIBS=$(ls dm_libs/libdm*.so | tr '\n' ' ')" >> $GITHUB_ENV
-          echo "✅ 达梦加密库准备完成"
-
-      - name: 打包应用
+      - name: 打包应用（包含达梦加密库）
         run: |
           if [ ! -f "./PythonDMService.py" ]; then
             echo "错误：未找到入口脚本 PythonDMService.py"
             exit 1
           fi
           
+          # 获取环境变量
           LIB_AIO_PATH="${{ env.LIB_AIO_PATH }}"
           LOW_GLIBC_LIBSTDCPP_PATH="${{ env.LOW_GLIBC_LIBSTDCPP_PATH }}"
           LOW_GLIBC_LIBGCC_S_PATH="${{ env.LOW_GLIBC_LIBGCC_S_PATH }}"
-          DM_CRYPTO_LIBS="${{ env.DM_CRYPTO_LIBS }}"
           
-          # 打包命令（包含达梦加密库）
+          # 验证达梦加密库文件存在
+          if [ ! -f "libdmcrypto.so" ] || [ ! -f "libdmdpi.so" ] || [ ! -f "libdmdpis.so" ]; then
+            echo "错误：缺少达梦加密库文件"
+            exit 1
+          fi
+          
+          echo "✅ 所有必需的库文件已准备就绪:"
+          ls -la libdmcrypto.so libdmdpi.so libdmdpis.so
+          
+          # 完整的打包命令，包含达梦加密库
           PYINSTALLER_CMD="./python/bin/pyinstaller --onefile --name myapp-linux \
             --paths=./python/lib/python3.11/site-packages \
             --hidden-import=flask \
@@ -218,7 +257,9 @@ jobs:
             --add-binary=\"$LIB_AIO_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBSTDCPP_PATH:.\" \
             --add-binary=\"$LOW_GLIBC_LIBGCC_S_PATH:.\" \
-            --add-binary=\"$DM_CRYPTO_LIBS:.\" \
+            --add-binary=\"libdmcrypto.so:.\" \
+            --add-binary=\"libdmdpi.so:.\" \
+            --add-binary=\"libdmdpis.so:.\" \
             ./PythonDMService.py"
           
           echo "执行打包命令: $PYINSTALLER_CMD"
@@ -232,15 +273,56 @@ jobs:
           echo "检查最终产物的GLIBC依赖："
           objdump -T dist/myapp-linux | grep -E "GLIBC_2.3[3-9]|GLIBC_2.[4-9][0-9]" | sort -V | head -10 || echo "✅ 未发现不兼容的高版本GLIBC依赖"
           
+          echo "检查达梦加密库是否包含："
+          strings dist/myapp-linux | grep -i "dmcrypto\|dmdpi" | head -5 || echo "⚠️ 未直接检测到达梦加密库字符串"
+          
           echo "打包完成，文件信息："
           ls -lh dist/myapp-linux
           file dist/myapp-linux
 
+      - name: 创建启动脚本
+        run: |
+          # 创建启动脚本，确保加密库能被正确加载
+          cat > dist/start.sh << 'EOF'
+          #!/bin/bash
+          
+          # 设置库路径，确保达梦加密库能被找到
+          export LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH
+          
+          # 检查必要的加密库是否存在（在打包时已包含）
+          echo "检查运行环境..."
+          if [ -f "./libdmcrypto.so" ]; then
+              echo "✅ libdmcrypto.so 存在"
+          else
+              echo "⚠️ libdmcrypto.so 未找到，但可能已打包进可执行文件"
+          fi
+          
+          if [ -f "./libdmdpi.so" ]; then
+              echo "✅ libdmdpi.so 存在"
+          else
+              echo "⚠️ libdmdpi.so 未找到，但可能已打包进可执行文件"
+          fi
+          
+          if [ -f "./libdmdpis.so" ]; then
+              echo "✅ libdmdpis.so 存在"
+          else
+              echo "⚠️ libdmdpis.so 未找到，但可能已打包进可执行文件"
+          fi
+          
+          echo "启动达梦API服务..."
+          ./myapp-linux
+          EOF
+          
+          chmod +x dist/start.sh
+          echo "✅ 启动脚本创建完成"
+
       - name: 保存产物
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-static
-          path: dist/myapp-linux
+          name: myapp-static-with-dmlibs
+          path: |
+            dist/myapp-linux
+            dist/start.sh
           retention-days: 7
 
   release:
@@ -251,12 +333,14 @@ jobs:
       - name: 下载产物
         uses: actions/download-artifact@v4
         with:
-          name: myapp-static
+          name: myapp-static-with-dmlibs
 
       - name: 创建Release
         uses: softprops/action-gh-release@v2
         with:
-          files: myapp-linux
+          files: |
+            myapp-linux
+            start.sh
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
