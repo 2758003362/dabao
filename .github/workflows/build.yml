@@ -12,8 +12,8 @@ on:
         default: 'release'
         type: choice
         options:
-        - release
-        - debug
+          - release
+          - debug
 
 jobs:
   build-linux:
@@ -308,7 +308,7 @@ for p in sys.path:
     print(' ', p)
 print('环境变量:')
 for key in ['LD_LIBRARY_PATH', 'PATH']:
-    print(f' {key}: {os.environ.get(key, \\\"未设置\\\")}')
+    print(f' {key}: {os.environ.get(key, \"未设置\")}')
 " 2>/dev/null || echo "Python不可用"
 
 echo "诊断完成"
